@@ -1882,26 +1882,6 @@ impl CPU {
         self.operation_ldm_stm(rb, rlist as u16, load, wb, pre, up, s_bit);
 
         self.step_program_counter(2);
-
-        return;
-
-        let mut base_addr = self.read_register(rb);
-
-        //for i in 0..8 {
-        //    if (rlist & (1 << i)) != 0 {
-        //        match load {
-        //            false => self.write_u32(true, base_addr, self.read_register(i)),
-        //            true => {
-        //                let val = self.read_u32(true, base_addr);
-        //                self.write_register(i, val);
-        //            }
-        //        }
-        //        base_addr += 4;
-        //    }
-        //}
-
-        //self.write_register(rb, base_addr);
-        //self.step_program_counter(2);
     }
 
     /// Format16
