@@ -1957,17 +1957,10 @@ impl CPU {
 
         //// Move address of next instruction to LR
         //self.write_register(14, next);
-
         let syscall = (opcode & 0xFF) as u8;
 
-        info!(
-            "[0x{:08X}] => execute: `SWI {:02X}`",
-            self.registers[15], syscall
-        );
-
-        self.bios_syscall(syscall);
+        self.operation_swi(syscall);
         self.step_program_counter(2);
-        self.cycle_count += 3;
     }
 
     /// Format18
@@ -2709,6 +2702,16 @@ impl CPU {
         self.operation_ldm_stm(r_base, r_list, load, wb, pre, up, s_bit);
 
         self.step_program_counter(4);
+    }
+
+    fn operation_swi(&mut self, syscall: u8) {
+        info!(
+            "[0x{:08X}] => execute: `SWI {:02X}`",
+            self.registers[15], syscall
+        );
+
+        self.bios_syscall(syscall);
+        self.cycle_count += 3;
     }
 
     /// Performs LDM or STM based on flags
