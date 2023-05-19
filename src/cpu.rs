@@ -1749,8 +1749,6 @@ impl CPU {
         let store_lr = (opcode & 0x0100) != 0;
         let r_list = (opcode & 0xFF) as u16;
 
-        println!("load={load}, lr={store_lr}");
-
         let r_list = match (load, store_lr) {
             (false, true) => {
                 info!("execute: `PUSH {{{r_list:08b}, LR}}");
