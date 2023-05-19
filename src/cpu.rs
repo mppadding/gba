@@ -1859,18 +1859,18 @@ impl CPU {
 
     /// Format15
     fn thumb_multiple_load_store(&mut self, opcode: u16) {
-        let rlist = (opcode & 0xFF) as u8;
-        let rb = ((opcode >> 8) & 0x7) as u8;
+        let r_list = (opcode & 0xFF) as u16;
+        let r_base = ((opcode >> 8) & 0x7) as u8;
         let load = (opcode & 0x0800) != 0;
 
         match load {
             false => info!(
                 "[0x{:08X}] => execute: `STMIA R{}!,{{{:08b}}}`",
-                self.registers[15], rb, rlist
+                self.registers[15], r_base, r_list
             ),
             true => info!(
                 "[0x{:08X}] => execute: `LDMIA R{}!,{{{:08b}}}`",
-                self.registers[15], rb, rlist
+                self.registers[15], r_base, r_list
             ),
         }
 
@@ -1879,7 +1879,7 @@ impl CPU {
         let up = true;
         let s_bit = false;
         let wb = true;
-        self.operation_ldm_stm(rb, rlist as u16, load, wb, pre, up, s_bit);
+        self.operation_ldm_stm(r_base, r_list, load, wb, pre, up, s_bit);
 
         self.step_program_counter(2);
     }
@@ -2698,70 +2698,17 @@ impl CPU {
     }
 
     fn arm_block_data_transfer(&mut self, opcode: u32) {
-        let rlist = opcode & 0xFFFF;
-        let rn = ((opcode >> 16) & 0xF) as u8;
+        let r_list = (opcode & 0xFFFF) as u16;
+        let r_base = ((opcode >> 16) & 0xF) as u8;
         let load = (opcode & 0x100000) != 0;
-        let write_back = (opcode & 0x200000) != 0;
-        let psr = (opcode & 0x400000) != 0;
+        let wb = (opcode & 0x200000) != 0;
+        let s_bit = (opcode & 0x400000) != 0;
         let up = (opcode & 0x800000) != 0;
         let pre = (opcode & 0x1000000) != 0;
 
-        let mut ptr = self.read_register(rn);
-
-        if psr {
-            todo!("S bit set (r15={})", (rlist & 0x8000) != 0);
-        }
-
-        let mut cycles_n = 0;
-
-        for i in 0..16 {
-            if (rlist & (1 << i)) != 0 {
-                if pre {
-                    match up {
-                        false => ptr.wrapping_sub(4),
-                        true => ptr.wrapping_add(4),
-                    };
-                }
-
-                match load {
-                    false => {
-                        let val = match i == 15 {
-                            false => self.read_register(i),
-                            true => self.read_register(i).wrapping_add(12),
-                        };
-
-                        self.write_u32(true, ptr, val);
-                    }
-                    true => {
-                        let val = self.read_u32(true, ptr);
-                        self.write_register(i, val);
-
-                        if i == 15 {
-                            cycles_n += 2;
-                        }
-                    }
-                }
-
-                if !pre {
-                    match up {
-                        false => ptr.wrapping_sub(4),
-                        true => ptr.wrapping_add(4),
-                    };
-                }
-
-                if write_back {
-                    self.write_register(rn, ptr);
-                }
-
-                cycles_n += 1;
-            }
-        }
+        self.operation_ldm_stm(r_base, r_list, load, wb, pre, up, s_bit);
 
         self.step_program_counter(4);
-        self.cycle_count += match load {
-            false => 1 + cycles_n,
-            true => 2 + cycles_n,
-        }
     }
 
     /// Performs LDM or STM based on flags
