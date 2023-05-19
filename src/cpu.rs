@@ -1514,6 +1514,7 @@ impl CPU {
         self.step_program_counter(2);
     }
 
+    /// Format7
     fn thumb_load_store_register_offset(&mut self, opcode: u16) {
         let rd = (opcode & 0x7) as u8;
         let rb = ((opcode >> 3) & 0x7) as u8;
@@ -2704,6 +2705,8 @@ impl CPU {
         self.step_program_counter(4);
     }
 
+    /// Performs SWI to `syscall`
+    /// Updates cycle_count accordingly
     fn operation_swi(&mut self, syscall: u8) {
         info!(
             "[0x{:08X}] => execute: `SWI {:02X}`",
