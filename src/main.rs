@@ -1,13 +1,15 @@
-use std::{io, thread, time::Duration};
+use std::time::Instant;
+use std::{collections::HashSet, io, time::Duration};
 
 use cpu::MMU;
+use crossterm::event::Event as TermEvent;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use debugger::Debugger;
-use log::{info, warn};
+use debugger::{Debugger, InputMode, ViewState};
+use log::warn;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tui_logger::init_logger;
 
@@ -16,83 +18,111 @@ use crate::cpu::CPU;
 mod cpu;
 mod debugger;
 mod disassembler;
-mod mem;
+mod keypad;
+mod lcd;
+mod renderer;
+mod sound;
 
-type Error = Box<dyn std::error::Error>;
-type ByteResult<T> = std::result::Result<T, Error>;
+use sdl2::event::Event as WinEvent;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
 
-struct ByteArray {
-    data: Vec<u8>,
-}
-
-impl ByteArray {
-    fn get_u8(&self, addr: usize) -> ByteResult<u8> {
-        if addr >= self.data.len() {
-            return Err("Addr `{:X}` out of range".into());
-        }
-
-        Ok(self.data[addr])
-    }
-    fn get_u16(&self, addr: usize) -> ByteResult<u16> {
-        if (addr + 1) >= self.data.len() {
-            return Err("Addr `{:X}` out of range".into());
-        }
-
-        Ok(((self.data[addr + 1] as u16) << 8) | (self.data[addr] as u16))
-    }
-    fn get_u32(&self, addr: usize) -> ByteResult<u32> {
-        if (addr + 3) >= self.data.len() {
-            return Err("Addr `{:X}` out of range".into());
-        }
-
-        Ok(((self.data[addr + 3] as u32) << 24)
-            | ((self.data[addr + 2] as u32) << 16)
-            | ((self.data[addr + 1] as u32) << 8)
-            | (self.data[addr] as u32))
-    }
-}
-
-fn main() -> Result<(), io::Error> {
+fn main() {
     init_logger(log::LevelFilter::Trace).unwrap();
     tui_logger::set_default_level(log::LevelFilter::Trace);
 
-    enable_raw_mode()?;
+    enable_raw_mode().expect("[TERM] Failed to enable raw mode");
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .expect("[TERM] Failed to enter alternate screen & enable mouse capture");
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend).expect("[TERM] Failed to create terminal");
 
     let mut dbg = Debugger::default();
+    dbg.breakpoints = HashSet::from([
+        0x00000000, 0x13c, 0x080002e0,
+        //0x080016BC
+    ]);
 
     let mut cpu = CPU::new();
     cpu.reset();
     cpu.load_bios(&std::fs::read("bios/gba_bios.bin").unwrap());
-    cpu.load_rom(&std::fs::read("roms/pokemon_emerald.gba").unwrap());
-    //cpu.load_rom(&std::fs::read("roms/super_dodgeball_advance.gba").unwrap());
-    //cpu.load_rom(&std::fs::read("roms/super_mario_advance2.gba").unwrap());
-    //cpu.load_rom(&std::fs::read("roms/super_mario_advance4.gba").unwrap());
-    //cpu.load_rom(&std::fs::read("roms/mario_kart_super_circuit.gba").unwrap());
-    //cpu.load_rom(&std::fs::read("roms/rgb_test.gba").unwrap());
+    //let rom = std::fs::read("roms/pokemon_emerald.gba").unwrap();
+    //let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
+    //let rom = std::fs::read("roms/super_mario_advance2.gba").unwrap();
+    //let rom = std::fs::read("roms/super_mario_advance4.gba").unwrap();
+    //let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
+    //let rom = std::fs::read("roms/rgb_test.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/first.gba").unwrap();
+    let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
+    cpu.load_rom(&rom.clone());
 
-    let mut instruction_counter: isize = 0;
-
-    let mut bkpt = 20;
-    bkpt = 22;
-
-    let (mut free_run, mut paused) = if bkpt > 0 {
-        (true, false)
+    if !dbg.breakpoints.is_empty() {
+        dbg.free_run = true;
+        dbg.paused = false;
     } else {
-        (false, true)
-    };
+        dbg.free_run = false;
+        dbg.paused = true;
+    }
 
-    loop {
+    let sdl_context = sdl2::init().expect("[SDL] Failed to create context");
+    let video_subsystem = sdl_context
+        .video()
+        .expect("[SDL] Failed to get video subsystem");
+
+    let window = video_subsystem
+        .window("pGBA", 240, 160)
+        .opengl()
+        .position(0, 0)
+        .build()
+        .map_err(|e| e.to_string())
+        .expect("[SDL] Failed to create window");
+
+    let mut canvas = window
+        .into_canvas()
+        .build()
+        .map_err(|e| e.to_string())
+        .expect("[SDL] Failed to get canvas");
+
+    let texture_creator = canvas.texture_creator();
+
+    let mut texture = texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGB24, 240, 160)
+        .map_err(|e| e.to_string())
+        .expect("[SDL] Cannot create texture");
+    renderer::draw_texture(&mut cpu, &mut texture);
+
+    let mut event_pump = sdl_context
+        .event_pump()
+        .expect("[SDL] Failed to get event pump");
+    terminal
+        .draw(|f| debugger::draw(f, &dbg, &mut cpu))
+        .expect("[TERM] Failed to draw to terminal");
+
+    let mut prev = Instant::now();
+    let mut start = Instant::now();
+    let mut frame_timer = Duration::from_micros(0);
+
+    //cpu.io_ime = 0;
+    //cpu.io_ie = cpu::IRQ_GAMEPAK | cpu::IRQ_DEBUG1;
+    //cpu.io_bios_if = cpu::IRQ_GAMEPAK;
+
+    //cpu.halt = true;
+    //dbg.free_run = false;
+    //dbg.paused = true;
+    //dbg.lockstep = true;
+
+    'running: loop {
+        let now = Instant::now();
+        let dt = now.duration_since(prev);
+
         let program_counter = cpu.get_program_counter();
         let opcode: u32 = if !cpu.addr_valid(program_counter) {
             if !cpu.panic {
                 warn!("Panicked! PC at invalid address `{:08X}`", program_counter);
                 cpu.panic = true;
             }
-            0
+            dbg.opcode
         } else {
             match cpu.is_thumb() {
                 true => {
@@ -109,99 +139,258 @@ fn main() -> Result<(), io::Error> {
 
         dbg.opcode = opcode;
 
-        terminal.draw(|f| debugger::draw(f, &dbg, &mut cpu))?;
+        if !cpu.panic && (!dbg.paused || dbg.free_run) {
+            if dbg.breakpoints.contains(&program_counter) {
+                warn!("Breakpoint hit at `{:08X}`", program_counter);
+                dbg.free_run = false;
+                dbg.paused = true;
+                dbg.lockstep = true;
+            }
+        }
 
-        if event::poll(Duration::from_secs(0)).unwrap_or(false) {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Enter => {
-                        if cpu.panic {
-                            warn!("CPU in panic mode, cannot step. Reset using `r`");
+        if cpu.panic || dbg.lockstep || !dbg.free_run {
+            terminal
+                .draw(|f| debugger::draw(f, &dbg, &mut cpu))
+                .expect("[TERM] Failed to draw to terminal");
+        }
+
+        for event in event_pump.poll_iter() {
+            match event {
+                // Keymap:
+                // GBA => Keyboard
+                // Shoulder Left => A
+                // Shoulder Right => S
+                // Up => Up
+                // Left => Left
+                // Right => Right
+                // Down => Down
+                //
+                // B => Z
+                // A => X
+                //
+                // Start => Enter
+                // Select => Backspace
+                WinEvent::Quit { .. }
+                | WinEvent::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'running,
+                WinEvent::KeyDown {
+                    keycode: Some(keycode),
+                    ..
+                } => match keycode {
+                    Keycode::X => cpu.keypad.press(keypad::BUTTON_A),
+                    Keycode::Z => cpu.keypad.press(keypad::BUTTON_B),
+                    Keycode::Backspace => cpu.keypad.press(keypad::BUTTON_SELECT),
+                    Keycode::Return => cpu.keypad.press(keypad::BUTTON_START),
+                    Keycode::Right => cpu.keypad.press(keypad::BUTTON_RIGHT),
+                    Keycode::Left => cpu.keypad.press(keypad::BUTTON_LEFT),
+                    Keycode::Up => cpu.keypad.press(keypad::BUTTON_UP),
+                    Keycode::Down => cpu.keypad.press(keypad::BUTTON_DOWN),
+                    Keycode::S => cpu.keypad.press(keypad::BUTTON_R),
+                    Keycode::A => cpu.keypad.press(keypad::BUTTON_L),
+                    _ => warn!("Press: {:?}", keycode),
+                },
+                WinEvent::KeyUp {
+                    keycode: Some(keycode),
+                    ..
+                } => match keycode {
+                    Keycode::X => cpu.keypad.release(keypad::BUTTON_A),
+                    Keycode::Z => cpu.keypad.release(keypad::BUTTON_B),
+                    Keycode::Backspace => cpu.keypad.release(keypad::BUTTON_SELECT),
+                    Keycode::Return => cpu.keypad.release(keypad::BUTTON_START),
+                    Keycode::Right => cpu.keypad.release(keypad::BUTTON_RIGHT),
+                    Keycode::Left => cpu.keypad.release(keypad::BUTTON_LEFT),
+                    Keycode::Up => cpu.keypad.release(keypad::BUTTON_UP),
+                    Keycode::Down => cpu.keypad.release(keypad::BUTTON_DOWN),
+                    Keycode::S => cpu.keypad.release(keypad::BUTTON_R),
+                    Keycode::A => cpu.keypad.release(keypad::BUTTON_L),
+                    _ => warn!("Release: {:?}", keycode),
+                },
+                _ => {}
+            }
+        }
+
+        while event::poll(Duration::from_secs(0)).unwrap_or(false) {
+            if let TermEvent::Key(key) = event::read().unwrap() {
+                if key.code == KeyCode::F(1) {
+                    dbg.input_mode = match dbg.input_mode {
+                        InputMode::GAME => InputMode::DEBUGGER,
+                        InputMode::DEBUGGER => InputMode::GAME,
+                    };
+                } else {
+                    if dbg.input_mode == InputMode::DEBUGGER {
+                        match key.code {
+                            KeyCode::Char('q') => break 'running,
+                            KeyCode::Enter => {
+                                if cpu.panic {
+                                    warn!(
+                                    "CPU in panic mode, cannot step. Reset using `r` (stuck at `{}`)",
+                                    dbg.instruction_counter
+                                );
+                                }
+
+                                dbg.paused = false
+                            }
+                            KeyCode::Char('p') => {
+                                dbg.state = match dbg.state {
+                                    ViewState::RAM => ViewState::IO,
+                                    ViewState::IO => ViewState::LOG,
+                                    ViewState::LOG => ViewState::RAM,
+                                };
+                            }
+                            KeyCode::Char('h') => dbg.free_run = !dbg.free_run,
+                            KeyCode::Char('l') => dbg.lockstep = !dbg.lockstep,
+                            KeyCode::F(2) => {
+                                dbg.free_run = true;
+                                dbg.input_mode = InputMode::GAME;
+                            }
+                            KeyCode::Char('r') => {
+                                warn!("CPU Reset");
+                                cpu.load_rom(&rom.clone());
+                                cpu.reset();
+                                dbg.reset();
+                            }
+                            KeyCode::Char('i') => {
+                                dbg.lockstep = true;
+                                dbg.paused = true;
+                                dbg.free_run = false;
+                                let can_trigger = cpu.can_irq_trigger(cpu::IRQ_DEBUG1);
+                                warn!("DEBUG1 IRQ Triggered => {can_trigger}");
+
+                                if can_trigger {
+                                    cpu.trigger_irq(cpu::IRQ_DEBUG1);
+                                }
+                            }
+                            _ => {
+                                warn!("Key: {:?}", key);
+                            }
                         }
-
-                        paused = false
                     }
-                    KeyCode::Char('h') => free_run = !free_run,
-                    KeyCode::Char('z') => panic!("Panic!"),
-                    KeyCode::Char('r') => {
-                        warn!("CPU Reset");
-                        cpu.reset();
-                        instruction_counter = 0;
-                        free_run = false;
-                        paused = true;
-                    }
-                    _ => {}
                 }
             }
         }
 
-        if !cpu.panic && (!paused || free_run) {
-            cpu.execute(opcode);
-
-            if !free_run {
-                paused = true;
+        if !cpu.panic && (!dbg.paused || dbg.free_run) {
+            if let Some(num) = cpu.dma_check() {
+                cpu.dma_run(num);
             }
 
-            if bkpt == instruction_counter {
-                free_run = false;
-                paused = true;
+            if !cpu.halt || (cpu.halt && cpu.get_mode() == cpu::MODE_IRQ) {
+                cpu.execute(opcode);
+
+                dbg.instruction_counter += 1;
+            } else {
+                warn!("CPU Halted");
             }
 
-            instruction_counter += 1;
+            if !dbg.free_run {
+                dbg.paused = true;
+            }
         }
 
-        thread::sleep(Duration::from_millis(16));
+        // Hdraw => 960
+        // HBlank => 272
+        // scanline => 1232
+        // Vdraw => 160*scanline => 197120
+        // VBlank => 68*scanline => 83776
+        // refresh => Vdraw+VBlank => 280896
+
+        frame_timer += dt;
+
+        if frame_timer >= Duration::from_nanos(lcd::TIME_NS_SCANLINE) {
+            let vcount = cpu.lcd.increment_vcount();
+
+            match vcount {
+                0..=160 => cpu
+                    .lcd
+                    .set_dispstat(cpu.lcd.get_dispstat() | lcd::DISPSTATE_VBLANK),
+                161..=227 => {
+                    cpu.lcd
+                        .set_dispstat(cpu.lcd.get_dispstat() & !(lcd::DISPSTATE_VBLANK));
+
+                    //if cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
+                    //    dbg.lockstep = true;
+                    //    dbg.paused = true;
+                    //    dbg.free_run = false;
+                    //    warn!("IRQ Tiggered");
+
+                    //    cpu.trigger_irq(cpu::IRQ_VBLANK);
+                    //}
+                }
+                _ => {
+                    cpu.lcd.set_vcount(0);
+
+                    canvas.clear();
+                    renderer::draw_texture(&mut cpu, &mut texture);
+                    canvas
+                        .copy(&texture, None, None)
+                        .expect("[SDL] Cannot copy texture");
+                    canvas.present();
+                }
+            }
+
+            // Scanline
+            frame_timer -= Duration::from_nanos(lcd::TIME_NS_SCANLINE);
+        }
+
+        //if frame_timer >= Duration::from_micros(16742) {
+        //    //canvas.clear();
+        //    //renderer::draw_texture(&mut cpu, &mut texture);
+        //    //canvas
+        //    //    .copy(&texture, None, None)
+        //    //    .expect("[SDL] Cannot copy texture");
+        //    //canvas.present();
+
+        //    // Reset frame_timer
+        //    frame_timer -= Duration::from_micros(16742);
+        //}
+        //::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 360));
+        // The rest of the game loop goes here...
+        prev = now;
     }
 
-    disable_raw_mode()?;
+    let end = Instant::now();
+
+    disable_raw_mode().expect("[TERM] Failed to disable raw mode");
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    Ok(())
+    )
+    .expect("[TERM] Failed to leave alternate screen & disable mouse capture");
+    terminal
+        .show_cursor()
+        .expect("[TERM] Failed to show cursor");
+    println!(
+        "{} IPS",
+        (dbg.instruction_counter as f64) / (end.duration_since(start).as_secs_f64())
+    );
 }
 
-//fn main() {
-//    let rom = ByteArray {
-//        data: std::fs::read("roms/pokemon_emerald.gba").unwrap(),
-//    };
+//fn main() -> Result<(), io::Error> {
+//    let mut running = true;
 //
-//    let mut cpu = CPU::new();
-//    cpu.reset();
+//    while running {
 //
-//    let mut instruction_counter: isize = 0;
-//    let br = 2;
-//    let step = true;
-//    let mut buffer = String::new();
-//    let stdin = io::stdin();
+//        // Keymap:
+//        // GBA => Keyboard
+//        // Shoulder Left => A
+//        // Shoulder Right => S
+//        // Up => Up
+//        // Left => Left
+//        // Right => Right
+//        // Down => Down
+//        //
+//        // B => Z
+//        // A => X
+//        //
+//        // Start => Enter
+//        // Select => Backspace
 //
-//    loop {
-//        let program_counter = cpu.get_program_counter() as usize;
-//        let opcode: u32 = match cpu.is_thumb() {
-//            true => rom.get_u16(program_counter).unwrap() as u32,
-//            false => rom.get_u32(program_counter).unwrap(),
-//        };
 //
-//        print_opcode_binary(opcode);
-//        print!("[{:08X}h] => {:08X}h ", program_counter, opcode);
-//
-//        cpu.execute(opcode);
-//
-//        if step {
-//            println!("\n{:#?}", cpu);
-//            println!("Enter to continue");
-//            stdin.read_line(&mut buffer).expect("Failed to read stdin");
-//        } else {
-//            if instruction_counter == br {
-//                println!("\n{:#?}", cpu);
-//                panic!("Dumped");
-//            }
+//        if cpu.panic || dbg.paused {
+//            thread::sleep(Duration::from_millis(16));
 //        }
-//
-//        instruction_counter += 1;
 //    }
 //}

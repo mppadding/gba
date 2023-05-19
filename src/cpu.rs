@@ -1,13 +1,32 @@
-use crate::mem::Memory;
 use log::*;
-use std::fmt;
+
+use crate::{keypad::Keypad, lcd::LCD};
+
+const ROM_WRITING: bool = false;
 
 pub trait MMU {
     fn read_u8(&mut self, intern: bool, addr: u32) -> u8;
+    fn read_u16(&mut self, intern: bool, addr: u32) -> u16;
     fn read_u32(&mut self, intern: bool, addr: u32) -> u32;
     fn write_u8(&mut self, intern: bool, addr: u32, val: u8);
+    //fn write_u16(&mut self, intern: bool, addr: u32, val: u16);
     fn write_u32(&mut self, intern: bool, addr: u32, val: u32);
     fn addr_valid(&self, addr: u32) -> bool;
+}
+
+#[derive(Default)]
+pub struct Serial {
+    pub siodata32: u32,
+    pub siomulti: [u8; 2 * 4],
+    pub siocnt: u16,
+    pub siomlt_send: u16,
+    pub siodata8: u16,
+    pub rcnt: u16,
+
+    pub joycnt: u16,
+    pub joy_recv: u32,
+    pub joy_trans: u32,
+    pub joystat: u16,
 }
 
 pub struct CPU {
@@ -28,10 +47,32 @@ pub struct CPU {
     pub rom: Vec<u8>,
     pub bios: Vec<u8>,
     pub mem_ptr: u32,
+
+    // IO Registers
+    pub dma: [u8; 4 * 3 * 4],
+    pub timers: [u8; 2 * 2 * 4],
+    pub io_waitcnt: u16,
+
+    // IO -- Interrupt Control
+    pub io_ime: u8,
+    pub io_ie: u16,
+    pub io_if: u16,
+
+    // IO -- Keypad input
+    pub keypad: Keypad,
+    pub lcd: LCD,
+    pub serial: Serial,
+
+    pub halt: bool,
+    pub io_bios_if: u16,
+
+    pub cycle_count: usize,
 }
 
 impl MMU for CPU {
     fn read_u8(&mut self, intern: bool, addr: u32) -> u8 {
+        let addr = addr & 0x0FFFFFFF;
+
         if intern {
             self.mem_ptr = addr;
 
@@ -40,18 +81,116 @@ impl MMU for CPU {
             }
         }
 
+        let offset = (addr & 0x00FFFFFF) as usize;
+
         let addr = addr as usize;
         match addr {
-            0x00000000..=0x00003FFF => 0, //self.bios[addr],
-            0x02000000..=0x0203FFFF => self.ram_work1[addr - 0x02000000],
-            0x03000000..=0x03007FFF => self.ram_work2[addr - 0x03000000],
+            0x00000000..=0x00003FFF => self.bios[addr],
+            0x02000000..=0x0203FFFF => self.ram_work1[offset],
+            0x03000000..=0x03007FFF => self.ram_work2[offset],
+            0x03FFFF00..=0x03FFFFFF => {
+                let offset = (offset & 0x000000FF) | 0x00007F00;
+                self.ram_work2[offset]
+            }
             0x04000000..=0x040003FE => {
                 if intern {
-                    info!("Read from IO register `{:08X}`", addr);
+                    warn!("Read8 from IO register `{:08X}`", addr);
                 }
+
+                let io_addr = addr & 0x3FF;
+
+                match io_addr {
+                    0x00..=0x56 => self.lcd.registers[io_addr],
+                    0x60..=0xA7 => {
+                        if intern {
+                            warn!("Read8 from Sound IO `{:08X}`", addr);
+                        }
+                        0
+                    }
+                    0xB0..=0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        self.dma[offset]
+                    }
+                    0x134 => (self.serial.rcnt & 0xFF) as u8,
+                    0x135 => ((self.serial.rcnt >> 8) & 0xFF) as u8,
+                    _ => {
+                        if intern {
+                            panic!("Read8 from unimplemented IO register `{:08X}`", addr)
+                        }
+                        0
+                    }
+                }
+            }
+            0x05000000..=0x050003FF => self.ram_palette[offset],
+            0x06000000..=0x06017FFF => self.ram_video[offset],
+            0x07000000..=0x070003FF => self.ram_obj_attr[offset],
+            0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
+                self.rom[offset]
+            }
+            _ => {
+                error!("Panicked! Address out of range `{:08X}`", addr);
+                self.panic = true;
                 0
             }
-            0x08000000..=0x09FFFFFC => self.rom[addr - 0x08000000],
+        }
+    }
+
+    fn read_u16(&mut self, intern: bool, addr: u32) -> u16 {
+        let addr = addr & 0x0FFFFFFF;
+
+        if intern {
+            self.mem_ptr = addr;
+
+            if addr < 0x00003FFF {
+                panic!("In bios `{:08X}`", addr);
+            }
+        }
+
+        let offset = (addr & 0x00FFFFFF) as usize;
+
+        match addr {
+            0x00000000..=0x00003FFF => {
+                //((self.bios[addr + 3] as u32) << 24)
+                //    | ((self.bios[addr + 2] as u32) << 16)
+                //    | ((self.bios[addr + 1] as u32) << 8)
+                //    | (self.bios[addr] as u32)
+                0
+            }
+            0x02000000..=0x0203FFFF => {
+                ((self.ram_work1[offset + 1] as u16) << 8) | (self.ram_work1[offset] as u16)
+            }
+            0x03000000..=0x03007FFF => {
+                ((self.ram_work2[offset + 1] as u16) << 8) | (self.ram_work2[offset] as u16)
+            }
+            0x04000000..=0x040003FE => {
+                if intern {
+                    warn!("Read16 from IO register `{:08X}`", addr);
+                }
+
+                let io_addr = addr & 0x3FF;
+
+                match io_addr {
+                    0x00 => self.lcd.get_dispcnt(),
+                    _ => {
+                        if intern {
+                            panic!("Read16 from unimplemented IO register `{:08X}`", addr)
+                        }
+                        0
+                    }
+                }
+            }
+            0x05000000..=0x050003FF => {
+                ((self.ram_palette[offset + 1] as u16) << 8) | (self.ram_palette[offset] as u16)
+            }
+            0x06000000..=0x06017FFF => {
+                ((self.ram_video[offset + 1] as u16) << 8) | (self.ram_video[offset] as u16)
+            }
+            0x07000000..=0x070003FF => {
+                ((self.ram_obj_attr[offset + 1] as u16) << 8) | (self.ram_obj_attr[offset] as u16)
+            }
+            0x08000000..=0x09FFFFFF | 0x0A000000..=0x0BFFFFFF | 0x0C000000..=0x0DFFFFFF => {
+                ((self.rom[offset + 1] as u16) << 8) | (self.rom[offset] as u16)
+            }
             _ => {
                 error!("Panicked! Address out of range `{:08X}`", addr);
                 self.panic = true;
@@ -61,6 +200,8 @@ impl MMU for CPU {
     }
 
     fn read_u32(&mut self, intern: bool, addr: u32) -> u32 {
+        let addr = addr & 0x0FFFFFFF;
+
         if intern {
             self.mem_ptr = addr;
 
@@ -69,42 +210,116 @@ impl MMU for CPU {
             }
         }
 
+        let offset = (addr & 0x00FFFFFF) as usize;
+
         match addr {
             0x00000000..=0x00003FFF => {
-                let addr = addr as usize;
-                0
-                //((self.bios[addr + 3] as u32) << 24)
-                //    | ((self.bios[addr + 2] as u32) << 16)
-                //    | ((self.bios[addr + 1] as u32) << 8)
-                //    | (self.bios[addr] as u32)
+                ((self.bios[offset + 3] as u32) << 24)
+                    | ((self.bios[offset + 2] as u32) << 16)
+                    | ((self.bios[offset + 1] as u32) << 8)
+                    | (self.bios[offset] as u32)
             }
             0x02000000..=0x0203FFFF => {
-                let addr = (addr - 0x02000000) as usize;
-                ((self.ram_work1[addr + 3] as u32) << 24)
-                    | ((self.ram_work1[addr + 2] as u32) << 16)
-                    | ((self.ram_work1[addr + 1] as u32) << 8)
-                    | (self.ram_work1[addr] as u32)
+                ((self.ram_work1[offset + 3] as u32) << 24)
+                    | ((self.ram_work1[offset + 2] as u32) << 16)
+                    | ((self.ram_work1[offset + 1] as u32) << 8)
+                    | (self.ram_work1[offset] as u32)
             }
+            0x03007FF8 => self.io_bios_if as u32,
             0x03000000..=0x03007FFF => {
-                let addr = (addr - 0x03000000) as usize;
-                ((self.ram_work2[addr + 3] as u32) << 24)
-                    | ((self.ram_work2[addr + 2] as u32) << 16)
-                    | ((self.ram_work2[addr + 1] as u32) << 8)
-                    | (self.ram_work2[addr] as u32)
+                ((self.ram_work2[offset + 3] as u32) << 24)
+                    | ((self.ram_work2[offset + 2] as u32) << 16)
+                    | ((self.ram_work2[offset + 1] as u32) << 8)
+                    | (self.ram_work2[offset] as u32)
+            }
+            0x03FFFF00..=0x03FFFFFF => {
+                let offset = (offset & 0x000000FF) | 0x00007F00;
+                ((self.ram_work2[offset + 3] as u32) << 24)
+                    | ((self.ram_work2[offset + 2] as u32) << 16)
+                    | ((self.ram_work2[offset + 1] as u32) << 8)
+                    | (self.ram_work2[offset] as u32)
             }
             0x04000000..=0x040003FE => {
                 if intern {
-                    info!("Read from IO register `{:08X}`", addr);
+                    warn!("Read32 from IO register `{:08X}`", addr);
                 }
 
-                0
+                let io_addr = addr & 0x3FF;
+
+                match io_addr {
+                    0x00..=0x54 => {
+                        let offset = io_addr as usize;
+                        ((self.lcd.registers[offset + 3] as u32) << 24)
+                            | ((self.lcd.registers[offset + 2] as u32) << 16)
+                            | ((self.lcd.registers[offset + 1] as u32) << 8)
+                            | (self.lcd.registers[offset] as u32)
+                    }
+                    0x60..=0xA4 => {
+                        warn!("Read32 from Sound IO `{:08X}`", addr);
+                        0
+                    }
+                    0xB0..=0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        ((self.dma[offset + 3] as u32) << 24)
+                            | ((self.dma[offset + 2] as u32) << 16)
+                            | ((self.dma[offset + 1] as u32) << 8)
+                            | (self.dma[offset] as u32)
+                    }
+                    // Timers
+                    0x100..=0x10E => {
+                        let offset = (io_addr - 0x100) as usize;
+                        ((self.timers[offset + 3] as u32) << 24)
+                            | ((self.timers[offset + 2] as u32) << 16)
+                            | ((self.timers[offset + 1] as u32) << 8)
+                            | (self.timers[offset] as u32)
+                    }
+                    // Keypad
+                    0x130 => self.keypad.keyinput as u32,
+                    0x132 => self.keypad.keycnt as u32,
+                    // Serial (2)
+                    0x134 => self.serial.rcnt as u32,
+                    0x200 => {
+                        let ie_bytes = self.io_ie.to_le_bytes();
+                        let if_bytes = self.io_if.to_le_bytes();
+                        ((if_bytes[1] as u32) << 24)
+                            | ((if_bytes[0] as u32) << 16)
+                            | ((ie_bytes[1] as u32) << 8)
+                            | (ie_bytes[0] as u32)
+                    }
+                    0x202 => self.io_if as u32,
+                    0x204 => self.io_waitcnt as u32,
+                    0x208 => self.io_ime as u32,
+                    _ => {
+                        if intern {
+                            panic!("Read32 from unimplemented IO register `{:08X}`", addr)
+                        }
+                        0
+                    }
+                }
             }
-            0x08000000..=0x09FFFFFC => {
-                let addr = (addr - 0x08000000) as usize;
-                ((self.rom[addr + 3] as u32) << 24)
-                    | ((self.rom[addr + 2] as u32) << 16)
-                    | ((self.rom[addr + 1] as u32) << 8)
-                    | (self.rom[addr] as u32)
+            0x05000000..=0x050003FF => {
+                ((self.ram_palette[offset + 3] as u32) << 24)
+                    | ((self.ram_palette[offset + 2] as u32) << 16)
+                    | ((self.ram_palette[offset + 1] as u32) << 8)
+                    | (self.ram_palette[offset] as u32)
+            }
+            0x06000000..=0x06017FFF => {
+                ((self.ram_video[offset + 3] as u32) << 24)
+                    | ((self.ram_video[offset + 2] as u32) << 16)
+                    | ((self.ram_video[offset + 1] as u32) << 8)
+                    | (self.ram_video[offset] as u32)
+            }
+            0x07000000..=0x070003FF => {
+                ((self.ram_obj_attr[offset + 3] as u32) << 24)
+                    | ((self.ram_obj_attr[offset + 2] as u32) << 16)
+                    | ((self.ram_obj_attr[offset + 1] as u32) << 8)
+                    | (self.ram_obj_attr[offset] as u32)
+            }
+            0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
+                ((self.rom[offset + 3] as u32) << 24)
+                    | ((self.rom[offset + 2] as u32) << 16)
+                    | ((self.rom[offset + 1] as u32) << 8)
+                    | (self.rom[offset] as u32)
             }
             _ => {
                 error!("Panicked! Address out of range `{:08X}`", addr);
@@ -115,33 +330,73 @@ impl MMU for CPU {
     }
 
     fn write_u8(&mut self, intern: bool, addr: u32, val: u8) {
+        let addr = addr & 0x0FFFFFFF;
+
         if intern {
             self.mem_ptr = addr;
         }
+
+        let offset = (addr & 0x00FFFFFF) as usize;
 
         let addr = addr as usize;
         match addr {
             0x00000000..=0x00003FFF => {
                 error!(
-                    "Panicked! Cannot write to BIOS (`{:08X} => {:02X}`)",
+                    "Panicked! Cannot write8 to BIOS (`{:08X} => {:02X}`)",
                     addr, val
                 );
                 self.panic = true
             } //self.bios[addr] = val,
-            0x02000000..=0x0203FFFF => self.ram_work1[addr - 0x02000000] = val,
-            0x03000000..=0x03007FFF => self.ram_work2[addr - 0x03000000] = val,
+            0x02000000..=0x0203FFFF => self.ram_work1[offset] = val,
+            0x03000000..=0x03007FFF => self.ram_work2[offset] = val,
             0x04000000..=0x040003FE => {
-                info!("Write to IO register `{:08X} = {:02X}`", addr, val);
+                warn!("Write8 to IO register `{:08X} = {:02X}`", addr, val);
+
+                let io_addr = addr & 0x3FF;
+
+                match io_addr {
+                    0x60..=0xA7 => {
+                        warn!("Write8 to Sound IO `{:08X}` => {:02X}", addr, val);
+                    }
+                    0xB0..=0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        self.dma[offset] = val;
+                    }
+                    _ => {
+                        if intern {
+                            panic!(
+                                "Write8 to unimplemented IO register `{:08X}` => {:02X}",
+                                addr, val
+                            )
+                        }
+                    }
+                }
             }
-            0x08000000..=0x09FFFFFC => self.rom[addr - 0x08000000] = val,
+            0x05000000..=0x050003FF => self.ram_palette[offset] = val,
+            0x06000000..=0x06017FFF => {
+                panic!("Write to video");
+                self.ram_video[offset] = val
+            }
+            0x07000000..=0x070003FF => self.ram_obj_attr[offset] = val,
+            0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
+                if ROM_WRITING {
+                    warn!("Write8 to ROM `{:08X} => {:02X}`", addr, val);
+                    self.rom[offset] = val;
+                } else {
+                    error!("Panicked! Cannot Write8 to ROM @ `{:08X}`", addr);
+                    self.panic = true;
+                }
+            }
             _ => {
-                error!("Panicked! Write Address out of range `{:08X}`", addr);
+                error!("Panicked! Write8 Address out of range `{:08X}`", addr);
                 self.panic = true;
             }
         }
     }
 
     fn write_u32(&mut self, intern: bool, addr: u32, val: u32) {
+        let addr = addr & 0x0FFFFFFF;
+
         if intern {
             self.mem_ptr = addr;
 
@@ -150,89 +405,165 @@ impl MMU for CPU {
             }
         }
 
+        let offset = (addr & 0x00FFFFFF) as usize;
+        let b3 = ((val >> 24) & 0xFF) as u8;
+        let b2 = ((val >> 16) & 0xFF) as u8;
+        let b1 = ((val >> 8) & 0xFF) as u8;
+        let b0 = (val & 0xFF) as u8;
+
         match addr {
             0x02000000..=0x0203FFFF => {
-                let addr = (addr - 0x02000000) as usize;
-                self.ram_work1[addr + 3] = ((val >> 24) & 0xFF) as u8;
-                self.ram_work1[addr + 2] = ((val >> 16) & 0xFF) as u8;
-                self.ram_work1[addr + 1] = ((val >> 8) & 0xFF) as u8;
-                self.ram_work1[addr] = (val & 0xFF) as u8;
+                self.ram_work1[offset + 3] = b3;
+                self.ram_work1[offset + 2] = b2;
+                self.ram_work1[offset + 1] = b1;
+                self.ram_work1[offset] = b0;
+            }
+            0x03007FF8 => {
+                todo!("Implement custom halt clearing on flag trigger in IFBIOS");
             }
             0x03000000..=0x03007FFF => {
-                let addr = (addr - 0x03000000) as usize;
-                self.ram_work2[addr + 3] = ((val >> 24) & 0xFF) as u8;
-                self.ram_work2[addr + 2] = ((val >> 16) & 0xFF) as u8;
-                self.ram_work2[addr + 1] = ((val >> 8) & 0xFF) as u8;
-                self.ram_work2[addr] = (val & 0xFF) as u8;
+                self.ram_work2[offset + 3] = b3;
+                self.ram_work2[offset + 2] = b2;
+                self.ram_work2[offset + 1] = b1;
+                self.ram_work2[offset] = b0;
+            }
+            0x03FFFF00..=0x03FFFFFF => {
+                let offset = (offset & 0x000000FF) | 0x00007F00;
+                self.ram_work2[offset + 3] = b3;
+                self.ram_work2[offset + 2] = b2;
+                self.ram_work2[offset + 1] = b1;
+                self.ram_work2[offset] = b0;
             }
             0x04000000..=0x040003FE => {
-                info!("Write to IO register `{:08X}` => {:08X}", addr, val)
+                if intern {
+                    warn!("Write32 to IO register `{:08X}` => {:08X}", addr, val)
+                }
+
+                let io_addr = addr & 0x3FF;
+
+                match io_addr {
+                    0x00..=0x54 => {
+                        self.lcd.registers[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                        self.lcd.registers[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                        self.lcd.registers[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                        self.lcd.registers[offset] = (val & 0xFF) as u8;
+                    }
+                    0x60..=0xA4 => {
+                        warn!("Write32 to Sound IO `{:08X}` => {:08X}", addr, val);
+                    }
+                    0xB0..=0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        self.dma[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                        self.dma[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                        self.dma[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                        self.dma[offset] = (val & 0xFF) as u8;
+                    }
+                    // Timers
+                    0x100..=0x10E => {
+                        let offset = (io_addr - 0x100) as usize;
+                        self.timers[offset + 3] = b3;
+                        self.timers[offset + 2] = b2;
+                        self.timers[offset + 1] = b1;
+                        self.timers[offset] = b0;
+                    }
+                    // Serial (2)
+                    0x134 => self.serial.rcnt = (val & 0xFFFF) as u16,
+                    0x200 => {
+                        self.io_ie = (val & 0xFFFF) as u16;
+                        warn!(
+                            "Write32 to Interrupt Enable Register `{:08X}` => {:08X}",
+                            addr, val
+                        );
+                    }
+                    0x202 => {
+                        let val = (val & 0xFFFF) as u16;
+                        self.io_if &= !(val);
+                        warn!(
+                            "Write32 to Interrupt Request Flags Register `{:08X}` => {:08X}",
+                            addr, val
+                        );
+                    }
+                    0x204 => {
+                        self.io_waitcnt = (val & 0xFFFF) as u16;
+                        warn!(
+                            "Write32 to GamePak Waitstate Control `{:08X}` => {:08X}",
+                            addr, val
+                        );
+                    }
+                    0x208 => {
+                        self.io_ime = (val & 0xFF) as u8;
+                        warn!(
+                            "Write32 to Interrupt Master Enable Register `{:08X}` => {:08X}",
+                            addr, val
+                        );
+                    }
+                    _ => {
+                        if intern {
+                            panic!(
+                                "Write32 to unimplemented IO register `{:08X}` => {:08X}",
+                                addr, val
+                            )
+                        }
+                    }
+                }
             }
-            0x08000000..=0x09FFFFFC => {
-                error!(
-                    "Panicked! Cannot write to ROM (`{:08X} => {:02X}`)",
-                    addr, val
-                );
-                self.panic = true;
+            0x05000000..=0x050003FF => {
+                self.ram_palette[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                self.ram_palette[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                self.ram_palette[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                self.ram_palette[offset] = (val & 0xFF) as u8;
+            }
+            0x06000000..=0x06017FFF => {
+                //panic!("VRAM Write `{:08X}` => `{:08X}`", addr, val);
+                self.ram_video[offset + 3] = b3;
+                self.ram_video[offset + 2] = b2;
+                self.ram_video[offset + 1] = b1;
+                self.ram_video[offset] = b0;
+            }
+            0x07000000..=0x070003FF => {
+                self.ram_obj_attr[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                self.ram_obj_attr[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                self.ram_obj_attr[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                self.ram_obj_attr[offset] = (val & 0xFF) as u8;
+            }
+            0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
+                if ROM_WRITING {
+                    warn!("Write32 to ROM `{:08X} => {:08X}`", addr, val);
+                    self.rom[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                    self.rom[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                    self.rom[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                    self.rom[offset] = (val & 0xFF) as u8;
+                } else {
+                    error!(
+                        "Panicked! Cannot write32 to ROM (`{:08X} => {:08X}`)",
+                        addr, val
+                    );
+                    self.panic = true;
+                }
             }
             _ => {
-                error!("Address out of range `{:08X}`", addr);
+                error!("Write32 Address out of range `{:08X}`", addr);
                 self.panic = true;
             }
         }
     }
 
     fn addr_valid(&self, addr: u32) -> bool {
+        let addr = addr & 0x0FFFFFFF;
         match addr {
             (0x00000000..=0x00003FFF)
             | (0x02000000..=0x0203FFFF)
             | (0x03000000..=0x03007FFF)
+            | (0x03FFFF00..=0x03FFFFFF)
             | (0x04000000..=0x040003FE)
-            | (0x08000000..=0x09FFFFFC) => true,
+            | (0x05000000..=0x050003FF)
+            | (0x06000000..=0x06017FFF)
+            | (0x07000000..=0x070003FF)
+            | (0x08000000..=0x09FFFFFC)
+            | (0x0A000000..=0x0BFFFFFC)
+            | (0x0C000000..=0x0DFFFFFC) => true,
             _ => false,
         }
-    }
-}
-
-impl fmt::Debug for CPU {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "CPU Core Dump:")?;
-        match self.is_thumb() {
-            false => {
-                writeln!(f, "\tMode: ARM\n")?;
-                for i in 0..15 {
-                    writeln!(
-                        f,
-                        "\tR{}\t=> {:08X}h ({})",
-                        i, self.registers[i], self.registers[i]
-                    )?;
-                }
-
-                writeln!(
-                    f,
-                    "\tR15 (PC)=> {:08X}h ({})\n",
-                    self.registers[15], self.registers[15]
-                )?;
-            }
-            true => {
-                writeln!(f, "\tMode: THUMB")?;
-                writeln!(f, "")?;
-            }
-        }
-
-        writeln!(f, "\tStatus (CPSR):")?;
-        writeln!(f, "\t\t31 30 29 28")?;
-        writeln!(f, "\t\t N  Z  C  V")?;
-        writeln!(
-            f,
-            "\t\t {}  {}  {}  {}",
-            self.get_flag_n() as u8,
-            self.get_flag_z() as u8,
-            self.get_flag_c() as u8,
-            self.get_flag_v() as u8
-        )?;
-
-        Ok(())
     }
 }
 
@@ -264,7 +595,7 @@ const FLAG_MASK_V: u32 = 0x10000000;
 
 const MODE_USER: u8 = 0x0;
 const MODE_FIQ: u8 = 0x1;
-const MODE_IRQ: u8 = 0x2;
+pub const MODE_IRQ: u8 = 0x2;
 const MODE_SUPERVISOR: u8 = 0x3;
 const MODE_ABORT: u8 = 0x7;
 const MODE_UNDEFINED: u8 = 0xB;
@@ -290,6 +621,23 @@ const ALU_MOV: u8 = 0xD;
 const ALU_BIC: u8 = 0xE;
 const ALU_MVN: u8 = 0xF;
 
+pub const IRQ_VBLANK: u16 = 1 << 0;
+pub const IRQ_HBLANK: u16 = 1 << 1;
+pub const IRQ_VCOUNT: u16 = 1 << 2;
+pub const IRQ_TIM0: u16 = 1 << 3;
+pub const IRQ_TIM1: u16 = 1 << 4;
+pub const IRQ_TIM2: u16 = 1 << 5;
+pub const IRQ_TIM3: u16 = 1 << 6;
+pub const IRQ_SERIAL: u16 = 1 << 7;
+pub const IRQ_DMA0: u16 = 1 << 8;
+pub const IRQ_DMA1: u16 = 1 << 9;
+pub const IRQ_DMA2: u16 = 1 << 10;
+pub const IRQ_DMA3: u16 = 1 << 11;
+pub const IRQ_KEYPAD: u16 = 1 << 12;
+pub const IRQ_GAMEPAK: u16 = 1 << 13;
+pub const IRQ_DEBUG1: u16 = 1 << 14;
+pub const IRQ_DEBUG2: u16 = 1 << 15;
+
 impl CPU {
     pub fn new() -> Self {
         Self {
@@ -310,6 +658,18 @@ impl CPU {
             panic: false,
             rom: Vec::new(),
             bios: Vec::new(),
+            dma: [0; 4 * 3 * 4],
+            timers: [0; 2 * 2 * 4],
+            io_waitcnt: 0,
+            io_ie: 0,
+            io_ime: 0,
+            io_if: 0,
+            keypad: Keypad::new(),
+            lcd: LCD::new(),
+            serial: Serial::default(),
+            halt: false,
+            io_bios_if: 0,
+            cycle_count: 0,
         }
     }
 
@@ -321,7 +681,7 @@ impl CPU {
         self.bios = bios.to_vec();
     }
 
-    fn get_flag_n(&self) -> bool {
+    pub fn get_flag_n(&self) -> bool {
         self.reg_cpsr & FLAG_MASK_N > 0
     }
 
@@ -331,7 +691,7 @@ impl CPU {
     }
 
     fn set_mode(&mut self, mode: u8) {
-        self.reg_cpsr = (self.reg_cpsr & 0xFFFFFFE0) | (mode as u32);
+        self.reg_cpsr = (self.reg_cpsr & 0xFFFFFFE0) | 0x10 | (mode as u32);
     }
 
     fn set_flag_n(&mut self, set: bool) {
@@ -341,7 +701,7 @@ impl CPU {
         }
     }
 
-    fn get_flag_z(&self) -> bool {
+    pub fn get_flag_z(&self) -> bool {
         self.reg_cpsr & FLAG_MASK_Z > 0
     }
 
@@ -352,7 +712,7 @@ impl CPU {
         }
     }
 
-    fn get_flag_c(&self) -> bool {
+    pub fn get_flag_c(&self) -> bool {
         self.reg_cpsr & FLAG_MASK_C > 0
     }
 
@@ -363,7 +723,7 @@ impl CPU {
         }
     }
 
-    fn get_flag_v(&self) -> bool {
+    pub fn get_flag_v(&self) -> bool {
         self.reg_cpsr & FLAG_MASK_V > 0
     }
 
@@ -378,12 +738,83 @@ impl CPU {
         self.registers = [0; 16];
         self.reg_cpsr = STATUS_FLAG_F | STATUS_FLAG_I | (MODE_SUPERVISOR as u32);
         self.regs_spsr = [0; 16];
+        self.dma = [0; 48];
 
         self.set_program_counter(0x08000000);
-        //self.set_program_counter(0x00000000);
+
+        // Setup stack pointers
+        self.regs_svc[0] = 0x03007FE0;
+        self.regs_irq[0] = 0x03007FA0;
+        self.registers[13] = 0x03007F00;
 
         // Clear panic flag
         self.panic = false;
+        self.halt = false;
+    }
+
+    pub fn trigger_irq(&mut self, irq: u16) {
+        self.io_if |= irq;
+        self.halt = false;
+
+        // Store current CPSR into SPSR[current_mode], store SPSR[IRQ] in CPSR
+        self.regs_spsr[MODE_IRQ as usize] = self.reg_cpsr;
+        warn!("IRQ: Stored CPSR `{:08X}` in SPSR[IRQ]", self.reg_cpsr);
+
+        // Set IRQ mode, disable IRQs, Clear Thumb
+        self.reg_cpsr = 0x80 | 0x10 | (MODE_IRQ as u32);
+        warn!("IRQ: Set CPSR to `{:08X}`", self.reg_cpsr);
+
+        self.write_register(14, self.get_program_counter() + 4);
+        warn!("IRQ: Store return in LR `{:08X}`", self.read_register(14));
+        self.set_program_counter(0x18);
+        warn!("IRQ: Jump to 0x18");
+
+        // IRQ Handler in BIOS:
+        // 00000018  b      128h                ;IRQ vector: jump to actual BIOS handler
+        // 00000128  stmfd  r13!,r0-r3,r12,r14  ;save registers to SP_irq
+        // 0000012C  mov    r0,4000000h         ;ptr+4 to 03FFFFFC (mirror of 03007FFC)
+        // 00000130  add    r14,r15,0h          ;retadr for USER handler $+8=138h
+        // 00000134  ldr    r15,[r0,-4h]        ;jump to [03FFFFFC] USER handler
+        // 00000138  ldmfd  r13!,r0-r3,r12,r14  ;restore registers from SP_irq
+        // 0000013C  subs   r15,r14,4h          ;return from IRQ (PC=LR-4, CPSR=SPSR)
+    }
+
+    pub fn can_irq_trigger(&mut self, irq: u16) -> bool {
+        let ime_enable = (self.io_ime & 0x1) == 0x1;
+        let ie_enable = (self.io_ie & irq) == irq;
+        let if_enable = (self.io_if & irq) == irq;
+        let irq_enable = (self.reg_cpsr & 0x80) != 0x80;
+
+        let bios_if_enable = (self.io_bios_if & irq) == irq;
+
+        if !ie_enable || (!self.halt && (!irq_enable || !ime_enable)) {
+            return false;
+        }
+
+        if self.halt && (self.io_bios_if != 0 && !bios_if_enable) {
+            warn!("Halted (with BIOS IF), but IRQ `{irq:04X}` not in BIOS_IF");
+            return false;
+        }
+
+        match irq {
+            IRQ_VBLANK => self.lcd.is_vblank_irq_enabled(),
+            IRQ_HBLANK => self.lcd.is_hblank_irq_enabled(),
+            IRQ_VCOUNT => self.lcd.is_vcount_irq_enabled(),
+            IRQ_TIM0 => false,
+            IRQ_TIM1 => false,
+            IRQ_TIM2 => false,
+            IRQ_TIM3 => false,
+            IRQ_SERIAL => false,
+            IRQ_DMA0 => false,
+            IRQ_DMA1 => false,
+            IRQ_DMA2 => false,
+            IRQ_DMA3 => false,
+            IRQ_KEYPAD => self.keypad.is_irq_enabled(),
+            IRQ_GAMEPAK => true, // Triggers on cart removal
+            IRQ_DEBUG1 => true,
+            IRQ_DEBUG2 => true,
+            _ => false,
+        }
     }
 
     pub fn read_register(&self, register: u8) -> u32 {
@@ -393,9 +824,13 @@ impl CPU {
             mode != MODE_SYSTEM && mode != MODE_USER,
             mode == MODE_FIQ,
         ) {
-            (0..=7, _, _) | (8..=14, false, _) | (8..=12, true, false) | (15, _, _) => {
+            (0..=7, _, _) | (8..=14, false, _) | (8..=12, true, false) => {
                 self.registers[register as usize]
             }
+            (15, _, _) => match self.is_thumb() {
+                false => self.registers[15] & 0xFFFFFFFC,
+                true => self.registers[15] & 0xFFFFFFFE,
+            },
             (8..=14, true, true) => self.regs_fiq[(register - 8) as usize], // FIQ
             (13..=14, true, _) => match mode {
                 MODE_SUPERVISOR => self.regs_svc[(register - 13) as usize],
@@ -415,9 +850,13 @@ impl CPU {
             mode != MODE_SYSTEM && mode != MODE_USER,
             mode == MODE_FIQ,
         ) {
-            (0..=7, _, _) | (8..=14, false, _) | (8..=12, true, false) | (15, _, _) => {
+            (0..=7, _, _) | (8..=14, false, _) | (8..=12, true, false) => {
                 self.registers[register as usize] = value
             }
+            (15, _, _) => match self.is_thumb() {
+                false => self.registers[15] = value & 0xFFFFFFFC,
+                true => self.registers[15] = value & 0xFFFFFFFE,
+            },
             (8..=14, true, true) => self.regs_fiq[(register - 8) as usize] = value, // FIQ
             (13..=14, true, _) => match mode {
                 MODE_SUPERVISOR => self.regs_svc[(register - 13) as usize] = value,
@@ -454,85 +893,517 @@ impl CPU {
 
     // TODO: set to private
     pub fn set_program_counter(&mut self, addr: u32) {
-        self.registers[15] = addr;
+        self.write_register(15, addr);
     }
 
     fn step_program_counter(&mut self, steps: u32) {
         self.registers[15] += steps;
     }
 
-    fn bios_syscall(&mut self, syscall: u8) {
-        match syscall {
-            0x01 => {
-                let flags = self.read_register(0) & 0xFF;
+    /// Memcopy `count` bytes from `src` to `dest`.
+    /// Does not do bounds checking
+    fn memcpy(&mut self, dest: u32, src: u32, count: u32) {
+        for i in 0..count {
+            let val = self.read_u8(true, src + i);
+            self.write_u8(true, dest + i, val);
+        }
+    }
 
-                info!(
-                    "HLE: executing syscall `RegisterRamReset` with `{:08b}`",
-                    flags
-                );
+    /// Memfill `count` words from `val` to `dest`.
+    /// Does not do bounds checking
+    fn memfill32(&mut self, dest: u32, val: u32, words: u32) {
+        for i in 0..words {
+            self.write_u32(true, dest + (i * 4), val);
+        }
+    }
 
-                if (flags & 0x1) != 0 {
-                    self.ram_work1 = [0; 256 * 1024];
+    /// Check DMAs and see if any need to run
+    pub fn dma_check(&mut self) -> Option<u8> {
+        for i in 0..4 {
+            let control = {
+                let reg = self.read_u32(false, 0x040000B0 + ((i * 12) + 8));
+
+                (reg >> 16) & 0xFFFF
+            };
+
+            let timing = ((control >> 12) & 0x3) as u8;
+            let enable = (control & 0x8000) != 0;
+
+            // Skips if not enabled and if SOUND DMA is specified
+            if !enable || (timing == 0x03 && (i == 1 || i == 2)) {
+                continue;
+            }
+
+            match timing {
+                0x00 => return Some(i as u8),
+                0x01 => todo!("Check VBlank DMA start timing => DMA{}", i),
+                0x02 => todo!("Check HBlank DMA start timing => DMA{}", i),
+                0x03 => todo!("Check Special DMA start timing => DMA{}", i),
+                _ => unreachable!(),
+            }
+        }
+
+        None
+    }
+
+    pub fn dma_run(&mut self, num: u8) {
+        let addr_base: u32 = 0x040000B0;
+        let reg_offset = (num as u32) * 12;
+        let src = self.read_u32(true, addr_base + reg_offset + 0);
+        let dest = self.read_u32(true, addr_base + reg_offset + 4);
+        let (count, control) = {
+            let reg = self.read_u32(true, addr_base + reg_offset + 8);
+            let cnt = reg & 0xFFFF;
+
+            let cnt = match (cnt, num) {
+                (0, 3) => 0x10000,
+                (0, _) => 0x4000,
+                (_, _) => cnt,
+            };
+
+            (cnt, (reg >> 16) & 0xFFFF)
+        };
+
+        let dest_ctrl = ((control >> 5) & 0x3) as u8; // 0=inc, 1=dec, 2=fixed, 3=inc+reload
+        let src_ctrl = ((control >> 7) & 0x3) as u8; // 0=inc, 1=dec, 2=fixed, 3=prohib
+        let repeat = (control & 0x200) != 0;
+        let word = (control & 0x400) != 0;
+        let drq = (control & 0x800) != 0;
+        let timing = ((control >> 12) & 0x3) as u8;
+        let irq = (control & 0x4000) != 0;
+        let enable = (control & 0x8000) != 0;
+
+        info!(
+            "DMA: Start transfer from `{:08X}` to `{:08X}` with count={:X} (dest_ctrl={}, src_ctrl={}, repeat={}, word={}, drq={}, timing={}, irq={})",
+            src, dest, count, dest_ctrl, src_ctrl, repeat, word, drq, timing, irq
+        );
+
+        let step: u32 = match word {
+            false => 2,
+            true => 4,
+        };
+
+        let mut src_ptr = src;
+        let mut dest_ptr = dest;
+
+        for _ in 0..count {
+            // Read/Write to memory
+            if word {
+                let val = self.read_u32(true, src_ptr);
+                self.write_u32(true, dest_ptr, val);
+            } else {
+                let low = self.read_u8(true, src_ptr);
+                let high = self.read_u8(true, src_ptr + 1);
+
+                self.write_u8(true, dest_ptr, low);
+                self.write_u8(true, dest_ptr + 1, high);
+            }
+
+            // Fix pointers
+            dest_ptr = match dest_ctrl {
+                0 => dest_ptr + step,
+                1 => dest_ptr - step,
+                2 => dest_ptr,
+                3 => {
+                    todo!("Implement DMA dest increment+reload");
+                    dest_ptr + step
                 }
-                if (flags & 0x2) != 0 {
-                    for i in 0..(0x7E00) {
-                        self.ram_work2[i] = 0;
-                    }
-                }
-                if (flags & 0x4) != 0 {
-                    self.ram_palette = [0; 1 * 1024];
-                }
-                if (flags & 0x8) != 0 {
-                    self.ram_video = [0; 96 * 1024];
-                }
-                if (flags & 0x10) != 0 {
-                    self.ram_obj_attr = [0; 1 * 1024];
-                }
-                if (flags & 0x20) != 0 {
-                    // Clear SIO
-                }
-                if (flags & 0x40) != 0 {
-                    // Clear Sound registers
-                }
-                if (flags & 0x80) != 0 {
-                    // Clear other registers
+                _ => unreachable!(),
+            };
+
+            src_ptr = match src_ctrl {
+                0 => src_ptr + step,
+                1 => src_ptr - step,
+                2 => src_ptr,
+                3 => panic!("DMA Source Addr Control = 3 invalid"),
+                _ => unreachable!(),
+            };
+        }
+
+        if irq {
+            todo!("Implement DMA finish IRQ");
+        }
+
+        if !repeat {
+            // Clear enable bit
+            self.dma[(reg_offset as usize) + 11] &= !(0x80);
+        }
+
+        info!(
+            "DMA: Finish transfer from `{:08X}` to `{:08X}` with count={:X}",
+            src, dest, count
+        );
+    }
+
+    // SWI 0x01
+    fn syscall_register_ram_reset(&mut self) {
+        let flags = self.read_register(0) & 0xFF;
+
+        info!(
+            "HLE: executing syscall `RegisterRamReset` with `{:08b}`",
+            flags
+        );
+
+        if (flags & 0x1) != 0 {
+            self.ram_work1 = [0; 256 * 1024];
+        }
+        if (flags & 0x2) != 0 {
+            for i in 0..(0x7E00) {
+                self.ram_work2[i] = 0;
+            }
+        }
+        if (flags & 0x4) != 0 {
+            self.ram_palette = [0; 1 * 1024];
+        }
+        if (flags & 0x8) != 0 {
+            self.ram_video = [0; 96 * 1024];
+        }
+        if (flags & 0x10) != 0 {
+            self.ram_obj_attr = [0; 1 * 1024];
+        }
+        if (flags & 0x20) != 0 {
+            // Clear SIO
+        }
+        if (flags & 0x40) != 0 {
+            // Clear Sound registers
+        }
+        if (flags & 0x80) != 0 {
+            self.lcd.reset();
+            // Clear other registers
+        }
+    }
+
+    // SWI 0x02
+    fn syscall_halt(&mut self) {
+        self.halt = true;
+        warn!("HLE: executing syscall `Halt`");
+    }
+
+    // SWI 0x04
+    fn syscall_intr_wait(&mut self) {
+        let discard = (self.read_register(0) & 0x1) == 0x1;
+        let r1 = (self.read_register(1) & 0xFFFF) as u16;
+
+        warn!("HLE: executing syscall `IntrWait` with discard={discard}, irqs={r1:04X}");
+
+        // r0 =>
+        //      0=Return immediately if an old flag was already set
+        //      1=Discard old flags, wait until a new flag becomes set
+        //
+        // r1 => Interrupt flag(s) to wait for (same format as IE/IF registers)
+
+        if !discard {
+            todo!("Implement IntrWait with discard=0");
+        }
+
+        self.io_ime |= 0x1;
+        self.io_bios_if = r1;
+        self.halt = true;
+    }
+
+    // SWI 0x05
+    fn syscall_vblank_intr_wait(&mut self) {
+        self.write_register(0, 1);
+        self.write_register(1, 1);
+        self.syscall_intr_wait();
+    }
+
+    // SWI 0x0B
+    fn syscall_cpu_set(&mut self) {
+        let rs_val = self.read_register(0);
+        let rd_val = self.read_register(1);
+        let len_mode = self.read_register(2);
+
+        let count = (len_mode & 0x1FFFFF);
+        let fill = (len_mode & 0x01000000) != 0;
+        let word = (len_mode & 0x04000000) != 0;
+
+        info!(
+            "HLE: executing syscall `CpuSet` with `rd={:08X}, rs={:08X}, count={:X}, fill={}, word={}`",
+            rd_val, rs_val, count, fill, word
+        );
+
+        if fill {
+            if !word {
+                todo!("Implement CpuSet::fill halfword");
+            } else {
+                let val = self.read_u32(true, rs_val);
+                for i in 0..count {
+                    let offset = i * 4;
+                    self.write_u32(true, rd_val + offset, val);
                 }
             }
+        } else {
+            if !word {
+                todo!("Implement CpuSet::copy halfword");
+            } else {
+                for i in 0..count {
+                    let offset = i * 4;
+                    let val = self.read_u32(true, rs_val + offset);
+                    self.write_u32(true, rd_val + offset, val);
+                }
+            }
+        }
+    }
+
+    // SWI 0x0C
+    fn syscall_cpu_fast_set(&mut self) {
+        let src_addr = self.read_register(0);
+        let dest_addr = self.read_register(1);
+        let len_mode = self.read_register(2);
+
+        let count = len_mode & 0x1FFFFF;
+        let fill = (len_mode & 0x01000000) != 0;
+
+        info!(
+            "HLE: executing syscall `CpuFastSet` with `dest_addr={:08X}, src_addr={:08X}, count={:X}, fill={}`",
+            dest_addr, src_addr, count, fill
+        );
+
+        if fill {
+            if count % 8 != 0 {
+                panic!("CpuFastSet: Count should be multiple of 8");
+            }
+
+            let val = self.read_u32(true, src_addr);
+
+            self.memfill32(dest_addr, val, count);
+        } else {
+            todo!("Implement Copy CpuFastSet");
+        }
+    }
+
+    fn bios_syscall(&mut self, syscall: u8) {
+        match syscall {
+            0x01 => self.syscall_register_ram_reset(),
+            0x02 => self.syscall_halt(),
+            0x04 => self.syscall_intr_wait(),
+            0x05 => self.syscall_vblank_intr_wait(),
+            0x0B => self.syscall_cpu_set(),
+            0x0C => self.syscall_cpu_fast_set(),
             _ => panic!("Unknown BIOS syscall `{:02X}h`", syscall),
         }
     }
 
+    /// Format1
     fn thumb_move_shifted_register(&mut self, opcode: u16) {
-        let rd = (opcode & 0x3) as usize;
-        let rs = ((opcode >> 3) & 0x3) as usize;
+        let rd = (opcode & 0x7) as u8;
+        let rs = ((opcode >> 3) & 0x7) as u8;
+        let rs_val = self.read_register(rs);
 
         let offset = ((opcode >> 6) & 0x1F) as u8;
         let op = ((opcode >> 11) & 0x3) as u8;
 
-        match op {
+        let (res, carry) = match op {
             0x0 => {
-                info!("execute: `LSL R{},R{},#{}`", rd, rs, offset);
-                self.registers[rd] = self.registers[rs] << offset
+                info!(
+                    "[0x{:08X}] => execute: `LSL R{},R{},#{}`, #{}",
+                    self.registers[15], rd, rs, offset, rs_val
+                );
+                let carry = ((rs_val >> (32 - offset)) & 0x1) != 0;
+                (rs_val << offset, carry)
             }
             0x1 => {
-                info!("execute: `LSR R{},R{},#{}`", rd, rs, offset);
-                self.registers[rd] = self.registers[rs] >> offset
+                info!(
+                    "[0x{:08X}] => execute: `LSR R{},R{},#{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                let carry = match offset {
+                    0 => false,
+                    _ => ((rs_val >> (offset - 1)) & 0x1) != 0,
+                };
+                (rs_val >> offset, carry)
             }
             0x2 => {
-                info!("execute: `ASR R{},R{},#{}`", rd, rs, offset);
-                // Arithmetic shift
-                let msb = self.registers[rs] & 0xF0000000;
-                self.registers[rd] = msb | (self.registers[rs] >> offset);
+                info!(
+                    "[0x{:08X}] => execute: `ASR R{},R{},#{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                let rs_signed = rs_val as i32;
+                let carry = match offset {
+                    0 => false,
+                    _ => ((rs_val >> (offset - 1)) & 0x1) != 0,
+                };
+                ((rs_signed >> offset) as u32, carry)
             }
             _ => {
                 error!("Invalid opcode for move_shifted_register {}", op);
-                self.panic = true
+                self.panic = true;
+                (0, true)
             }
+        };
+
+        self.write_register(rd, res);
+
+        self.set_flag_n((res & 0x80000000) != 0);
+        self.set_flag_z(res == 0);
+        if offset != 0 {
+            self.set_flag_c(carry);
+            //self.set_flag_v((rs_val & 0x80000000) != (res & 0x80000000));
         }
 
         self.step_program_counter(2);
     }
 
+    /// Format2
+    fn thumb_add_subtract(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rs = ((opcode >> 3) & 0x7) as u8;
+        let rs_val = self.read_register(rs);
+        let offset = ((opcode >> 6) & 0x7) as u8;
+        let sub = (opcode & 0x200) != 0;
+        let imm = (opcode & 0x400) != 0;
+
+        let (result, n, z, c, v) = match (sub, imm) {
+            (false, false) => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},R{},R{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                self.alu(ALU_ADD, rs_val, self.read_register(offset))
+            }
+            (false, true) => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},R{},#{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                self.alu(ALU_ADD, rs_val, offset as u32)
+            }
+            (true, false) => {
+                info!(
+                    "[0x{:08X}] => execute: `SUB R{},R{},R{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                self.alu(ALU_SUB, rs_val, self.read_register(offset))
+            }
+            (true, true) => {
+                info!(
+                    "[0x{:08X}] => execute: `SUB R{},R{},#{}`",
+                    self.registers[15], rd, rs, offset
+                );
+                self.alu(ALU_SUB, rs_val, offset as u32)
+            }
+        };
+
+        self.write_register(rd, result);
+        self.set_flag_n(n);
+        self.set_flag_z(z);
+        self.set_flag_c(c);
+        self.set_flag_v(v);
+
+        self.step_program_counter(2);
+    }
+
+    /// Format3
+    fn thumb_mov_cmp_add_sub_imm(&mut self, opcode: u16) {
+        let offset = (opcode & 0xFF) as u32;
+        let rd = ((opcode >> 8) & 0x7) as u8;
+        let op = ((opcode >> 11) & 0x3) as u8;
+        let rd_val = self.read_register(rd);
+
+        let (result, n, z, c, v) = match op {
+            0b00 => {
+                info!(
+                    "[0x{:08X}] => execute: `MOV R{},#0x{:02X}`",
+                    self.registers[15], rd, offset
+                );
+                self.alu(ALU_MOV, 0, offset)
+            }
+            0b01 => {
+                info!(
+                    "[0x{:08X}] => execute: `CMP R{},#0x{:02X}`",
+                    self.registers[15], rd, offset
+                );
+                self.alu(ALU_CMP, rd_val, offset)
+            }
+            0b10 => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},#0x{:02X}`",
+                    self.registers[15], rd, offset
+                );
+                self.alu(ALU_ADD, rd_val, offset)
+            }
+            0b11 => {
+                info!(
+                    "[0x{:08X}] => execute: `SUB R{},#0x{:02X}`",
+                    self.registers[15], rd, offset
+                );
+                self.alu(ALU_SUB, rd_val, offset)
+            }
+            _ => unreachable!(""),
+        };
+
+        self.set_flag_n(n);
+        self.set_flag_z(z);
+        self.set_flag_c(c);
+        self.set_flag_v(v);
+
+        if op != 0b01 {
+            self.write_register(rd, result);
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format4
+    fn thumb_alu(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rd_val = self.read_register(rd);
+        let rs = ((opcode >> 3) & 0x7) as u8;
+        let rs_val = self.read_register(rs);
+
+        let op = ((opcode >> 6) & 0xF) as u8;
+
+        let (result, n, z, c, v) = match op {
+            0x2 => {
+                let (res, v) = rd_val.overflowing_shl(rs_val);
+                let carry = match rs_val {
+                    0 => false,
+                    _ => (rd_val & (1 << (32 - rs_val))) != 0,
+                };
+
+                (res, (res & 0x80000000) != 0, res == 0, carry, v)
+            } // LSL
+            0x3 => todo!("Implement LSR"), // LSR
+            0x4 => todo!("Implement ASR"), // ASR
+            0x7 => todo!("Implement ROR"), // ROR
+            0x9 => {
+                info!(
+                    "[0x{:08X}] => execute: `NEG R{},R{}`",
+                    self.registers[15], rd, rs
+                );
+                self.alu(ALU_RSB, rs_val, 0)
+            } // NEG
+            0xD => {
+                info!(
+                    "[0x{:08X}] => execute: `MUL R{},R{}`",
+                    self.registers[15], rd, rs
+                );
+                let res = rs_val.wrapping_mul(rd_val);
+                (
+                    res,
+                    (res & 0x80000000) != 0,
+                    res == 0,
+                    self.get_flag_c(),
+                    self.get_flag_v(),
+                )
+            } // MUL,
+            _ => self.alu(op, rd_val, rs_val),
+        };
+
+        self.set_flag_n(n);
+        self.set_flag_z(z);
+        self.set_flag_c(c);
+        self.set_flag_v(v);
+
+        if op != ALU_TST && op != ALU_CMP && op != ALU_CMN {
+            self.write_register(rd, result);
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format5
     fn thumb_hi_register_op_bx(&mut self, opcode: u16) {
         let rd = (opcode & 0x7) as u8;
         let rs = ((opcode >> 3) & 0x7) as u8;
@@ -562,133 +1433,530 @@ impl CPU {
             self.read_register(rd)
         };
 
-        match op {
+        let cycles = match op {
             0x0 => {
-                info!("execute: `ADD R{},R{}`", rd, rs);
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},R{}`",
+                    self.registers[15], rd, rs
+                );
                 self.write_register(rd, rd_val.wrapping_add(rs_val));
+                0
             }
             0x1 => {
-                info!("execute: `CMP R{},R{}", rd, rs);
-                todo!("Implement CMP");
+                info!(
+                    "[0x{:08X}] => execute: `CMP R{},R{}",
+                    self.registers[15], rd, rs
+                );
+
+                let (_, n, z, c, v) = self.alu(ALU_CMP, rd_val, rs_val);
+                self.set_flag_n(n);
+                self.set_flag_n(z);
+                self.set_flag_n(c);
+                self.set_flag_n(v);
+                0
             }
             0x2 => {
-                info!("execute: `MOV R{},R{}", rd, rs);
+                info!(
+                    "[0x{:08X}] => execute: `MOV R{},R{}",
+                    self.registers[15], rd, rs
+                );
                 self.write_register(rd, rs_val);
+                0
             }
             0x3 => {
                 // TODO: Refactor
                 let thumb = (rs_val & 0x1) == 0x1;
 
-                info!("execute: `BX R{}` => thumb={}", rs, thumb);
+                info!(
+                    "[0x{:08X}] => execute: `BX R{}` => thumb={}",
+                    self.registers[15], rs, thumb
+                );
 
                 self.set_thumb(thumb);
                 match thumb {
                     false => self.set_program_counter(rs_val),
                     true => self.set_program_counter(rs_val & 0xFFFFFFFE),
                 }
+
+                // Early return to prevent program_counter stepping
+                self.cycle_count += 3;
+                return;
             }
             _ => unreachable!("op > 0x3 (`{}`)", opcode),
+        };
+
+        if rd != 15 || op == 0x1 {
+            self.step_program_counter(2);
+        }
+
+        self.cycle_count += cycles;
+    }
+
+    /// Format6
+    fn thumb_pc_relative_load(&mut self, opcode: u16) {
+        let word = ((opcode & 0xFF) << 2) as u32;
+        let rd = ((opcode >> 8) & 0x7) as u8;
+
+        let addr = self
+            .get_program_counter()
+            .wrapping_add(4)
+            .wrapping_add(word)
+            & 0xFFFFFFFD;
+        let val = self.read_u32(true, addr);
+
+        info!(
+            "[0x{:08X}] => execute: `LDR R{},[PC,#0x{:02X}]`, R{} => [0x{:08X}] => 0x{:X}",
+            self.registers[15], rd, word, rd, addr, val
+        );
+
+        self.write_register(rd, val);
+
+        self.step_program_counter(2);
+    }
+
+    fn thumb_load_store_register_offset(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rb = ((opcode >> 3) & 0x7) as u8;
+        let ro = ((opcode >> 6) & 0x7) as u8;
+
+        let byte = (opcode & 0x400) != 0;
+        let load = (opcode & 0x800) != 0;
+
+        let ptr = self.read_register(rb).wrapping_add(self.read_register(ro));
+
+        match (load, byte) {
+            (false, false) => {
+                self.write_u32(true, ptr, self.read_register(rd));
+                info!("execute: `STR R{rd},[R{rb},R{ro}]`");
+            }
+            (false, true) => {
+                self.write_u8(true, ptr, (self.read_register(rd) & 0xFF) as u8);
+                info!("execute: `STRB R{rd},[R{rb},R{ro}]`");
+            }
+            (true, false) => {
+                let val = self.read_u32(true, ptr);
+                self.write_register(rd, val);
+                info!("execute: `LDR R{rd},[R{rb},R{ro}]`");
+            }
+            (true, true) => {
+                let val = self.read_u8(true, ptr);
+                self.write_register(rd, val as u32);
+                info!("execute: `LDRB R{rd},[R{rb},R{ro}]`");
+            }
         }
 
         self.step_program_counter(2);
     }
 
+    /// Thumb Format8
+    fn thumb_load_store_sign_extended_byte_halfword(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rb = ((opcode >> 3) & 0x7) as u8;
+        let ro = ((opcode >> 6) & 0x7) as u8;
+        let sign_extended = (opcode & 0x400) != 0;
+        let h_flag = (opcode & 0x800) != 0;
+
+        let addr = self.read_register(rb) + self.read_register(ro);
+
+        match (sign_extended, h_flag) {
+            (false, false) => {
+                let val = self.read_register(rd) & 0xFFFF;
+                info!(
+                    "[0x{:08X}] => execute: `STRH R{},[R{},R{}]`, [0x{:08X}] => 0x{:X}",
+                    self.registers[15], rd, rb, ro, addr, val
+                );
+                self.write_u32(true, addr, val);
+            }
+            (false, true) => {
+                let val = self.read_u16(true, addr);
+                info!(
+                    "[0x{:08X}] => execute: `LDR R{},[R{},R{}]`, R{} => [0x{:08X}] => 0x{:X}",
+                    self.registers[15], rd, rb, ro, rd, addr, val
+                );
+                self.write_register(rd, val as u32);
+            }
+            (true, false) => {
+                let val = self.read_u32(true, addr) & 0xFF;
+                let val = if (val & 0x80) != 0 {
+                    val | (0xFFFFFF00)
+                } else {
+                    val
+                };
+
+                info!(
+                    "[0x{:08X}] => execute: `LDSB R{},[R{},R{}]`, R{} => [0x{:08X}] => 0x{:X}",
+                    self.registers[15], rd, rb, ro, rd, addr, val
+                );
+                self.write_register(rd, val);
+            } //format!("LDSB R{},[R{},R{}]", rd, rb, ro),
+            (true, true) => {
+                let val = self.read_u32(true, addr) & 0xFFFF;
+                let val = if (val & 0x8000) != 0 {
+                    val | (0xFFFF0000)
+                } else {
+                    val
+                };
+
+                info!(
+                    "[0x{:08X}] => execute: `LDSH R{},[R{},R{}]`, R{} => [0x{:08X}] => 0x{:X}",
+                    self.registers[15], rd, rb, ro, rd, addr, val
+                );
+                self.write_register(rd, val);
+            }
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format9
+    fn thumb_load_store_immediate(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rb = ((opcode >> 3) & 0x7) as u8;
+        let offset = ((opcode >> 6) & 0x1F) as u32;
+        let load = (opcode & 0x800) != 0;
+        let byte = (opcode & 0x1000) != 0;
+
+        match (load, byte) {
+            (false, false) => {
+                let ptr = self.read_register(rb).wrapping_add(offset << 2);
+                info!(
+                    "[0x{:08X}] => execute: `STR R{},[R{},#{}]`",
+                    self.registers[15], rd, rb, offset
+                );
+
+                self.write_u32(true, ptr, self.read_register(rd));
+            }
+            (true, false) => {
+                let ptr = self.read_register(rb).wrapping_add(offset << 2);
+                let val = self.read_u32(true, ptr);
+                info!(
+                    "[0x{:08X}] => execute: `LDR R{},[R{},#{}]`, R{} => [0x{:08X}] => 0x{:X}",
+                    self.registers[15], rd, rb, offset, rd, ptr, val
+                );
+                self.write_register(rd, val);
+            }
+            (false, true) => {
+                let ptr = self.read_register(rb).wrapping_add(offset);
+                info!(
+                    "[0x{:08X}] => execute: `STRB R{},[R{},#{}]`",
+                    self.registers[15], rd, rb, offset
+                );
+
+                self.write_u8(true, ptr, (self.read_register(rd) & 0xFF) as u8);
+            }
+            (true, true) => {
+                let ptr = self.read_register(rb).wrapping_add(offset);
+                info!(
+                    "[0x{:08X}] => execute: `LDRB R{},[R{},#{}]`",
+                    self.registers[15], rd, rb, offset
+                );
+                let val = self.read_u8(true, ptr) as u32;
+                self.write_register(rd, val);
+            }
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format10
+    fn thumb_load_store_halfword(&mut self, opcode: u16) {
+        let rd = (opcode & 0x7) as u8;
+        let rb = ((opcode >> 3) & 0x7) as u8;
+        let offset = (((opcode >> 6) & 0x1F) << 1) as u32;
+        let load = (opcode & 0x800) != 0;
+
+        let addr = self.read_register(rb).wrapping_add(offset as u32);
+        let addr_val = self.read_u32(true, addr);
+
+        match load {
+            false => {
+                info!(
+                    "[0x{:08X}] => execute: `STRH R{},[R{}, #0x{:02X}]`",
+                    self.registers[15], rd, rb, offset
+                );
+                self.write_u32(
+                    true,
+                    addr,
+                    (addr_val & 0xFFFF0000) | (self.read_register(rd) & 0xFFFF),
+                )
+            }
+            true => {
+                info!(
+                    "[0x{:08X}] => execute: `LDRH R{},[R{}, #0x{:02X}]`",
+                    self.registers[15], rd, rb, offset
+                );
+                self.write_register(rd, addr_val & 0xFFFF)
+            }
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format11
+    fn thumb_sp_relative_load_store(&mut self, opcode: u16) {
+        let imm = ((opcode & 0xFF) << 2) as u32;
+        let rd = ((opcode >> 8) & 0x7) as u8;
+        let load = (opcode & 0x800) != 0;
+
+        let addr = self.read_register(13).wrapping_add(imm);
+
+        match load {
+            false => {
+                info!(
+                    "[0x{:08X}] => execute: `STR R{},[SP,#0x{:X}]`, [{:08X}] => R{}",
+                    self.registers[15], rd, imm, addr, rd
+                );
+
+                self.write_u32(true, addr, self.read_register(rd));
+            }
+            true => {
+                info!(
+                    "[0x{:08X}] => execute: `LDR R{},[SP,#0x{:X}]`, R{} => [{:08X}]",
+                    self.registers[15], rd, imm, rd, addr
+                );
+
+                let val = self.read_u32(true, addr);
+                self.write_register(rd, val);
+            }
+        }
+
+        self.step_program_counter(2);
+    }
+
+    /// Format12
+    fn thumb_load_address(&mut self, opcode: u16) {
+        let imm = ((opcode & 0xFF) << 2) as u32;
+        let rd = ((opcode >> 8) & 0x7) as u8;
+        let sp = (opcode & 0x0800) != 0;
+
+        let val = match sp {
+            false => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},PC,#0x{:X}`",
+                    self.registers[15], rd, imm
+                );
+                (self.get_program_counter() + 4) & 0xFFFFFFFD
+            }
+            true => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD R{},SP,#0x{:X}`",
+                    self.registers[15], rd, imm
+                );
+                self.read_register(13)
+            }
+        }
+        .wrapping_add(imm);
+
+        self.write_register(rd, val);
+
+        self.step_program_counter(2);
+    }
+
+    /// Format13
+    fn thumb_offset_to_sp(&mut self, opcode: u16) {
+        let imm = ((opcode & 0x7F) << 2) as u32;
+        let neg = (opcode & 0x80) != 0;
+
+        let sp_val = self.read_register(13);
+
+        let res = match neg {
+            false => {
+                info!(
+                    "[0x{:08X}] => execute: `ADD SP,#0x{:X}`",
+                    self.registers[15], imm
+                );
+                sp_val.wrapping_add(imm)
+            }
+            true => {
+                info!(
+                    "[0x{:08X}] => execute: `SUB SP,#0x{:X}`",
+                    self.registers[15], imm
+                );
+                sp_val.wrapping_sub(imm)
+            }
+        };
+
+        self.write_register(13, res);
+        self.step_program_counter(2);
+    }
+
+    /// Format14
     fn thumb_push_pop(&mut self, opcode: u16) {
         let load = (opcode & 0x0800) != 0;
         let store_lr = (opcode & 0x0100) != 0;
-        let rlist = (opcode & 0xFF);
+        let rlist = (opcode & 0xFF) as u8;
+
+        let mut sp = self.read_register(13);
+        let num_reg = if store_lr {
+            u8::count_ones(rlist) + 1
+        } else {
+            u8::count_ones(rlist)
+        };
 
         if load {
-            info!("execute: `POP`");
-            todo!("Implement POP");
-        } else {
-            let mut sp = self.read_register(13);
+            let final_sp = sp.wrapping_add(num_reg * 4);
 
-            // Push LR
-            if store_lr {
-                self.write_u32(true, sp, self.read_register(14));
-                sp -= 4;
-                info!("execute: `PUSH {{R{:08b}, LR}}`", rlist);
-            } else {
-                info!("execute: `PUSH {{R{:08b}}}`", rlist);
+            for i in 0..8 {
+                if (rlist & (1 << i)) != 0 {
+                    let val = self.read_u32(true, sp);
+                    self.write_register(i, val);
+                    sp += 4;
+                }
             }
+
+            // Pop PC
+            if store_lr {
+                info!(
+                    "[0x{:08X}] => execute: `POP {{R{:08b}, PC}}`",
+                    self.registers[15], rlist
+                );
+
+                let pc = self.read_u32(true, sp);
+                self.set_program_counter(pc);
+            } else {
+                info!(
+                    "[0x{:08X}] => execute: `POP {{R{:08b}}}`",
+                    self.registers[15], rlist
+                );
+                self.step_program_counter(2);
+            }
+
+            // Fix SP
+            self.write_register(13, final_sp);
+        } else {
+            let final_sp = sp.wrapping_sub(num_reg * 4);
+            // Push is Pre-decrement Addressing
+            sp = final_sp;
 
             // Push R0-R7
             for i in 0..8 {
                 if (rlist & (1 << i)) != 0 {
                     self.write_u32(true, sp, self.read_register(i));
-                    sp -= 4;
+                    sp += 4;
                 }
             }
 
-            // Fix SP
-            self.write_register(13, sp);
-        }
+            // Push LR
+            if store_lr {
+                self.write_u32(true, sp, self.read_register(14));
+                info!(
+                    "[0x{:08X}] => execute: `PUSH {{R{:08b}, LR}}`",
+                    self.registers[15], rlist
+                );
+            } else {
+                info!(
+                    "[0x{:08X}] => execute: `PUSH {{R{:08b}}}`",
+                    self.registers[15], rlist
+                );
+            }
 
-        self.step_program_counter(2);
+            // Fix SP
+            self.write_register(13, final_sp);
+
+            self.step_program_counter(2);
+        }
     }
 
-    fn thumb_mov_cmp_add_sub_imm(&mut self, opcode: u16) {
-        let offset = (opcode & 0xFF) as u32;
-        let rd = ((opcode >> 8) & 0x7) as u8;
-        let op = ((opcode >> 11) & 0x3) as u8;
-        let rd_val = self.read_register(rd);
+    /// Format15
+    fn thumb_multiple_load_store(&mut self, opcode: u16) {
+        let rlist = (opcode & 0xFF) as u8;
+        let rb = ((opcode >> 8) & 0x7) as u8;
+        let load = (opcode & 0x0800) != 0;
 
-        let (val, carry) = match op {
-            0b00 => {
-                info!("execute: `MOV R{},#{}`", rd, offset);
-                (offset, false)
-            }
-            0b01 => {
-                info!("execute: `CMP R{},#{}`", rd, offset);
-                rd_val.overflowing_sub(offset)
-            }
-            0b10 => {
-                info!("execute: `ADD R{},#{}`", rd, offset);
-                rd_val.overflowing_add(offset)
-            }
-            0b11 => {
-                info!("execute: `SUB R{},#{}`", rd, offset);
-                rd_val.overflowing_sub(offset)
-            }
-            _ => unreachable!(""),
+        match load {
+            false => info!(
+                "[0x{:08X}] => execute: `STMIA R{}!,{{{:08b}}}`",
+                self.registers[15], rb, rlist
+            ),
+            true => info!(
+                "[0x{:08X}] => execute: `LDMIA R{}!,{{{:08b}}}`",
+                self.registers[15], rb, rlist
+            ),
+        }
+
+        // STMIA Rb!,{Rlist} or LDMIA Rb!,{Rlist}
+        let pre = false;
+        let up = true;
+        let s_bit = false;
+        let wb = true;
+        self.operation_ldm_stm(rb, rlist as u16, load, wb, pre, up, s_bit);
+
+        self.step_program_counter(2);
+
+        return;
+
+        let mut base_addr = self.read_register(rb);
+
+        //for i in 0..8 {
+        //    if (rlist & (1 << i)) != 0 {
+        //        match load {
+        //            false => self.write_u32(true, base_addr, self.read_register(i)),
+        //            true => {
+        //                let val = self.read_u32(true, base_addr);
+        //                self.write_register(i, val);
+        //            }
+        //        }
+        //        base_addr += 4;
+        //    }
+        //}
+
+        //self.write_register(rb, base_addr);
+        //self.step_program_counter(2);
+    }
+
+    /// Format16
+    fn thumb_conditional_branch(&mut self, opcode: u16) {
+        let offset = ((opcode & 0xFF) << 1) as u32;
+        let cond = ((opcode >> 8) & 0xF) as u8;
+
+        let offset = match (offset & 0x100) == 0 {
+            false => offset | 0xFFFFFE00,
+            true => offset,
         };
 
-        self.set_flag_n((val & 0x80000000) != 0);
-        self.set_flag_z(val == 0);
-        self.set_flag_c(carry);
-        self.set_flag_v((rd_val & 0x80000000) != (val & 0x80000000));
-        // TODO: is this correct for overflow & carry?
+        let str = match cond {
+            0x0 => "BEQ",
+            0x1 => "BNE",
+            0x2 => "BCS",
+            0x3 => "BCC",
+            0x4 => "BMI",
+            0x5 => "BPL",
+            0x6 => "BVS",
+            0x7 => "BVC",
+            0x8 => "BHI",
+            0x9 => "BLS",
+            0xA => "BGE",
+            0xB => "BLT",
+            0xC => "BGT",
+            0xD => "BLE",
+            _ => "B???",
+        };
 
-        if op != 0b01 {
-            self.write_register(rd, val);
+        let addr = self
+            .get_program_counter()
+            .wrapping_add(4)
+            .wrapping_add(offset);
+
+        if self.should_execute(cond) {
+            info!(
+                "[0x{:08X}] => execute: `{} {:08X}` => Take",
+                self.registers[15], str, addr
+            );
+            self.set_program_counter(addr);
+
+            self.cycle_count += 3;
+        } else {
+            info!(
+                "[0x{:08X}] => execute: `{} {:08X}` => Skip",
+                self.registers[15], str, addr
+            );
+            self.step_program_counter(2);
+
+            self.cycle_count += 1;
         }
-
-        self.step_program_counter(2);
     }
 
-    fn thumb_long_branch_link(&mut self, opcode: u16) {
-        let offset = (opcode & 0x7FF) as u32;
-        let h = (opcode & 0x0800) != 0;
-
-        match h {
-            false => {
-                self.write_register(
-                    14,
-                    (self.get_program_counter().wrapping_add(4)).wrapping_add(offset << 12),
-                );
-                self.step_program_counter(2);
-            }
-            true => {
-                let next = self.get_program_counter() + 2;
-                self.set_program_counter(self.read_register(14).wrapping_add(offset << 1));
-                self.write_register(14, next | 1);
-            }
-        }
-
-        info!("execute: `BL{} {}`", h as u8, offset);
-    }
-
+    /// Format17
     fn thumb_swi(&mut self, opcode: u16) {
         //let next = self.get_program_counter() + 2;
 
@@ -712,122 +1980,188 @@ impl CPU {
 
         let syscall = (opcode & 0xFF) as u8;
 
-        info!("execute: `SWI {:02X}`", syscall);
+        info!(
+            "[0x{:08X}] => execute: `SWI {:02X}`",
+            self.registers[15], syscall
+        );
 
         self.bios_syscall(syscall);
         self.step_program_counter(2);
+        self.cycle_count += 3;
     }
 
+    /// Format18
     fn thumb_unconditional_branch(&mut self, opcode: u16) {
         let offset = ((opcode & 0x7FF) << 1) as u32;
-        let neg = (offset & 0x400) != 0;
+        let neg = (offset & 0x800) != 0;
 
         let extend = match neg {
-            false => 0xFFFFF000 | offset,
-            true => offset,
+            false => offset,
+            true => 0xFFFFF000 | offset,
         };
 
-        info!("execute: `B {}`", extend as i32);
+        info!(
+            "[0x{:08X}] => execute: `B {}`",
+            self.registers[15], extend as i32
+        );
 
         self.set_program_counter(
             self.get_program_counter()
                 .wrapping_add(extend)
-                .wrapping_add(1),
+                .wrapping_add(4),
+        );
+
+        self.cycle_count += 3;
+    }
+
+    /// Format19
+    fn thumb_long_branch_link(&mut self, opcode: u16) {
+        let offset = (opcode & 0x7FF) as u32;
+        let h = (opcode & 0x0800) != 0;
+
+        match h {
+            false => {
+                let offset_sign_extend = match (offset & 0x400) != 0 {
+                    false => offset << 12,
+                    true => 0xFF800000 | (offset << 12),
+                };
+
+                //panic!("BL0, offset=0b{:b}, neg={}", offset, (offset & 0x400) != 0);
+
+                self.write_register(
+                    14,
+                    (self.get_program_counter().wrapping_add(4)).wrapping_add(offset_sign_extend),
+                );
+                self.step_program_counter(2);
+                self.cycle_count += 1;
+            }
+            true => {
+                let next = self.get_program_counter() + 2;
+                self.set_program_counter(self.read_register(14).wrapping_add(offset << 1));
+                self.write_register(14, next | 1);
+                debug!("Written `{:08X}` to LR", next | 1);
+                self.cycle_count += 3;
+            }
+        }
+
+        info!(
+            "[0x{:08X}] => execute: `BL{} {}`",
+            self.registers[15], h as u8, offset
         );
     }
 
-    fn thumb_load_store_immediate(&mut self, opcode: u16) {
-        let rd = (opcode & 0x7) as u8;
-        let rb = ((opcode >> 3) & 0x7) as u8;
-        let offset = ((opcode >> 6) & 0x1F) as u32;
-        let load = (opcode & 0x800) != 0;
-        let byte = (opcode & 0x1000) != 0;
-
-        let ptr = self.read_register(rb).wrapping_add(offset);
-
-        match (load, byte) {
-            (false, false) => {
-                info!("execute: `STR R{},[R{},#{}]`", rd, rb, offset);
-
-                self.write_u32(true, ptr, self.read_register(rd));
+    /// Performs ALU operation
+    /// Returns (result, N, Z, C, V)
+    fn alu(&mut self, op: u8, operand1: u32, operand2: u32) -> (u32, bool, bool, bool, bool) {
+        let (result, carry, overflow) = match op {
+            ALU_AND | ALU_TST => {
+                if op == 0x0 {
+                    //info!("ALU: `AND #{}, #{}`", operand1, operand2);
+                } else {
+                    //info!("ALU: `TST #{}, #{}`", operand1, operand2);
+                }
+                (operand1 & operand2, false, false)
             }
-            (true, false) => {
-                info!("execute: `LDR R{},[R{},#{}]`", rd, rb, offset);
-                let val = self.read_u32(true, ptr);
-                self.write_register(rd, val);
+            ALU_EOR | ALU_TEQ => {
+                if op == 0x1 {
+                    //info!("ALU: `EOR #{}, #{}`", operand1, operand2);
+                } else {
+                    //info!("ALU: `TEQ #{}, #{}`", operand1, operand2);
+                }
+                (operand1 ^ operand2, false, false)
             }
-            (false, true) => {
-                info!("execute: `STRB R{},[R{},#{}]`", rd, rb, offset);
-
-                self.write_u8(true, ptr, (self.read_register(rd) & 0xFF) as u8);
+            ALU_SUB | ALU_CMP => {
+                if op == 0x2 {
+                    //info!("ALU: `SUB #{}, #{}`", operand1, operand2);
+                } else {
+                    //info!("ALU: `CMP #{}, #{}`", operand1, operand2);
+                }
+                let (result, carry) = operand1.overflowing_sub(operand2);
+                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+                (result, carry, overflow)
             }
-            (true, true) => {
-                info!("execute: `LDRB R{},[R{},#{}]`", rd, rb, offset);
-                let val = self.read_u8(true, ptr) as u32;
-                self.write_register(rd, val);
+            ALU_RSB => {
+                //info!("ALU: `RSB #{}, #{}`", operand1, operand2);
+                let (result, carry) = operand2.overflowing_sub(operand1);
+                let overflow = (operand2 ^ result) & 0x80000000 > 0;
+                (result, carry, overflow)
             }
-        }
-
-        self.step_program_counter(2);
-    }
-
-    fn thumb_load_store_halfword(&mut self, opcode: u16) {
-        let rd = (opcode & 0x7) as u8;
-        let rb = ((opcode >> 3) & 0x7) as u8;
-        let offset = (((opcode >> 6) & 0x1F) << 1) as u32;
-        let load = (opcode & 0x800) != 0;
-
-        let addr = self.read_register(rb).wrapping_add(offset as u32);
-        let addr_val = self.read_u32(true, addr);
-
-        match load {
-            false => {
-                info!("execute: `STRH R{},[R{}, #0x{:02X}]`", rd, rb, offset);
-                self.write_u32(
-                    true,
-                    addr,
-                    (addr_val & 0xFFFF0000) | (self.read_register(rd) & 0xFFFF),
-                )
+            ALU_ADD | ALU_CMN => {
+                if op == 0x4 {
+                    //info!("ALU: `ADD #{}, #{}`", operand1, operand2);
+                } else {
+                    //info!("ALU: `CMN #{}, #{}`", operand1, operand2);
+                }
+                let (result, carry) = operand1.overflowing_add(operand2);
+                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+                (result, carry, overflow)
             }
-            true => {
-                info!("execute: `LDRH R{},[R{}, #0x{:02X}]`", rd, rb, offset);
-                self.write_register(rd, addr_val & 0xFFFF)
+            ALU_ADC => {
+                //info!(
+                //    "ALU: `ADC #{}, #{}, C{}`",
+                //    operand1,
+                //    operand2,
+                //    self.get_flag_c() as u8
+                //);
+                let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
+                let (result, carry2) = result.overflowing_add(operand2);
+                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+                (result, carry | carry2, overflow)
             }
-        }
+            ALU_SBC => {
+                //info!(
+                //    "ALU: `SBC #{}, #{}, C{}`",
+                //    operand1,
+                //    operand2,
+                //    self.get_flag_c() as u8
+                //);
+                let (result, carry) = operand2.overflowing_add(self.get_flag_c() as u32);
+                let (result, carry2) = result.overflowing_sub(1);
+                let (result, carry3) = operand1.overflowing_sub(result);
+                let overflow = (operand1 ^ result) & 0x80000000 > 0;
 
-        self.step_program_counter(2);
-    }
+                // TODO: Is this correct?
+                warn!("Data Processing: SBC, correct?");
+                (result, carry | carry2 | carry3, overflow)
+            }
+            ALU_RSC => {
+                //info!(
+                //    "ALU: `RSC #{}, #{}, C{}`",
+                //    operand1,
+                //    operand2,
+                //    self.get_flag_c() as u8
+                //);
+                let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
+                let (result, carry2) = result.overflowing_sub(1);
+                let (result, carry3) = operand2.overflowing_sub(result);
+                let overflow = (operand2 ^ result) & 0x80000000 > 0;
 
-    fn thumb_pc_relative_load(&mut self, opcode: u16) {
-        let word = ((opcode & 0xFF) << 2) as u32;
-        let rd = ((opcode >> 8) & 0x7) as u8;
+                // TODO: Is this correct?
+                warn!("Data Processing: RSC, correct?");
+                (result, carry | carry2 | carry3, overflow)
+            }
+            ALU_ORR => {
+                //info!("ALU: `ORR #0x{:X}, #0x{:X}`", operand1, operand2);
+                (operand1 | operand2, false, false)
+            }
+            ALU_MOV => {
+                //info!("ALU: `MOV #0x{:X}`", operand2);
+                (operand2, false, false)
+            }
+            ALU_BIC => {
+                //info!("ALU: `BIC #{}, #{}`", operand1, operand2);
+                (operand1 & !(operand2), false, false)
+            }
+            ALU_MVN => {
+                //info!("ALU: `MVN #{}`", operand2);
+                (!operand2, false, false)
+            }
+            _ => unreachable!(),
+        };
 
-        info!("execute: `LDR R{},[PC,#0x{:02X}]`", rd, word);
-
-        let addr = self.get_program_counter().wrapping_add(word);
-        let val = self.read_u32(true, addr);
-
-        self.write_register(rd, val);
-
-        self.step_program_counter(2);
-    }
-
-    fn alu(&mut self, opcode: u8, operand1: u32, operand2: u32, set_condition: bool) -> u32 {
-        0
-    }
-
-    fn thumb_add_subtract(&mut self, opcode: u16) {
-        let offset = (opcode & 0xFF) as u32;
-        let rd = ((opcode >> 8) & 0x7) as u8;
-        let op = ((opcode >> 11) & 0x3) as u8;
-
-        match op {
-            0b00 => (format!("MOV R{},#{}", rd, offset), bits),
-            0b01 => (format!("CMP R{},#{}", rd, offset), bits),
-            0b10 => (format!("ADD R{},#{}", rd, offset), bits),
-            0b11 => (format!("SUB R{},#{}", rd, offset), bits),
-            _ => unreachable!(""),
-        }
+        let negative = (result & 0x80000000) != 0;
+        let zero = result == 0;
+        (result, negative, zero, carry, overflow)
     }
 
     fn execute_thumb(&mut self, opcode: u16) {
@@ -838,25 +2172,23 @@ impl CPU {
                 self.thumb_move_shifted_register(opcode);
             } // Move shifted register
             0x18..=0x1F => {
-                todo!("Add/subtract");
+                self.thumb_add_subtract(opcode);
             } // Add/subtract
             0x20..=0x3F => {
                 self.thumb_mov_cmp_add_sub_imm(opcode);
             } // Move/compare/add/subtract immediate
             0x40..=0x43 => {
-                todo!("ALU operations");
+                self.thumb_alu(opcode);
             } // ALU operations
-            0x44..=0x47 => {
-                self.thumb_hi_register_op_bx(opcode);
-            } // Hi register operations/branch exchange
+            0x44..=0x47 => self.thumb_hi_register_op_bx(opcode), // Hi register operations/branch exchange
             0x48..=0x4F => {
                 self.thumb_pc_relative_load(opcode);
             } // PC-relative load
             0x50 | 0x51 | 0x54 | 0x55 | 0x58 | 0x59 | 0x5C | 0x5D => {
-                todo!("Load/store with register offset");
+                self.thumb_load_store_register_offset(opcode);
             } // Load/store with register offset
             0x52 | 0x53 | 0x56 | 0x57 | 0x5A | 0x5B | 0x5E | 0x5F => {
-                todo!("Load/store sign-extended byte/halfword");
+                self.thumb_load_store_sign_extended_byte_halfword(opcode);
             } // Load/store sign-extended byte/halfword
             0x60..=0x7F => {
                 self.thumb_load_store_immediate(opcode);
@@ -865,22 +2197,22 @@ impl CPU {
                 self.thumb_load_store_halfword(opcode);
             } // Load/store halfword
             0x90..=0x9F => {
-                todo!("SP-relative load/store");
+                self.thumb_sp_relative_load_store(opcode);
             } // SP-relative load/store
             0xA0..=0xAF => {
-                todo!("Load address");
+                self.thumb_load_address(opcode);
             } // Load address
             0xB0 => {
-                todo!("Add offset to stack pointer");
+                self.thumb_offset_to_sp(opcode);
             } // Add offset to stack pointer
             0xB4 | 0xB5 | 0xBC | 0xBD => {
                 self.thumb_push_pop(opcode);
             } // Push/pop registers
             0xC0..=0xCF => {
-                todo!("Multiple load/store");
+                self.thumb_multiple_load_store(opcode);
             } // Multiple load/store
             0xD0..=0xDE => {
-                todo!("Conditional branch");
+                self.thumb_conditional_branch(opcode);
             } // Conditional branch
             0xDF => {
                 self.thumb_swi(opcode);
@@ -942,13 +2274,22 @@ impl CPU {
         let target = target.wrapping_add(offset);
 
         if link {
-            info!("execute: `BL 0x{:X}` => 0x{:08X}", offset, target);
+            info!(
+                "[0x{:08X}] => execute: `BL 0x{:X}` => 0x{:08X}",
+                self.registers[15], offset, target
+            );
             self.write_register(14, self.get_program_counter() + 4);
         } else {
-            info!("execute: `B 0x{:X}` => 0x{:08X}", offset + 8, target);
+            info!(
+                "[0x{:08X}] => execute: `B 0x{:X}` => 0x{:08X}",
+                self.registers[15],
+                offset + 8,
+                target
+            );
         }
 
         self.set_program_counter(target);
+        self.cycle_count += 3;
     }
 
     fn arm_data_processing(&mut self, opcode: u32) {
@@ -969,22 +2310,20 @@ impl CPU {
             true => "S",
         };
 
-        let (operand2, shifter_carry) = if i {
+        let (operand2, shifter_carry, op2_str) = if i {
             let imm = opcode & 0xFF;
             let rot = ((opcode >> 8) & 0xF) << 1;
 
-            // TODO: Is this correct, we preserve C flag on immediates
-            warn!("Data Processing: Preserving C flag on immediates, correct?");
-            (imm.rotate_right(rot), self.get_flag_c())
+            (imm.rotate_right(rot), self.get_flag_c(), String::new())
         } else {
             let rm = (opcode & 0xF) as usize;
-            let shift_type = ((opcode >> 5) & 0x2) as u8;
+            let shift_type = ((opcode >> 5) & 0x3) as u8;
             let is_reg = (opcode & 0x10) != 0x00;
 
             let rm_value = self.read_register(rm as u8);
 
             let (shift_amount, rm_value) = if !is_reg {
-                let shift = (opcode >> 6) & 0x1F;
+                let shift = (opcode >> 7) & 0x1F;
                 if rm == 15 {
                     (shift, rm_value + 8)
                 } else {
@@ -1010,7 +2349,7 @@ impl CPU {
                         overflow
                     };
 
-                    (result, carry)
+                    (result, carry, String::new())
                 }
                 0x1 => {
                     let (result, overflow) = rm_value.overflowing_shr(shift_amount);
@@ -1022,7 +2361,7 @@ impl CPU {
                         overflow
                     };
 
-                    (result, carry)
+                    (result, carry, format!("R{rm},LSR #{shift_amount}"))
                 }
                 0x2 => todo!("arithmetic right"),
                 0x3 => todo!("rotate right"),
@@ -1033,55 +2372,67 @@ impl CPU {
         let (result, logical, carry, overflow) = match op {
             0x0 | 0x8 => {
                 if op == 0x0 {
-                    info!("execute: `AND`");
+                    info!(
+                        "[0x{:08X}] => execute: `AND R{rd},???,{op2_str}`",
+                        self.registers[15]
+                    );
                 } else {
-                    info!("execute: `TST`");
+                    info!("[0x{:08X}] => execute: `TST`", self.registers[15]);
                 }
                 (operand1 & operand2, true, false, false)
             }
             0x1 | 0x9 => {
                 if op == 0x1 {
-                    info!("execute: `EOR {},{}`", operand1, operand2);
+                    info!(
+                        "[0x{:08X}] => execute: `EOR {},{}`",
+                        self.registers[15], operand1, operand2
+                    );
                 } else {
-                    info!("execute: `TEQ {},{}`", operand1, operand2);
+                    info!(
+                        "[0x{:08X}] => execute: `TEQ {},{}`",
+                        self.registers[15], operand1, operand2
+                    );
                 }
                 (operand1 ^ operand2, true, false, false)
             }
             0x2 | 0xA => {
                 if op == 0x2 {
-                    info!("execute: `SUB ???`");
+                    info!("[0x{:08X}] => execute: `SUB ???`", self.registers[15]);
                 } else {
-                    info!("execute: `CMP ???`");
+                    info!("[0x{:08X}] => execute: `CMP ???`", self.registers[15]);
                 }
                 let (result, carry) = operand1.overflowing_sub(operand2);
                 let overflow = (operand1 ^ result) & 0x80000000 > 0;
                 (result, false, carry, overflow)
             }
             0x3 => {
-                info!("execute: `RSB ???`");
+                info!("[0x{:08X}] => execute: `RSB ???`", self.registers[15]);
                 let (result, carry) = operand2.overflowing_sub(operand1);
                 let overflow = (operand2 ^ result) & 0x80000000 > 0;
                 (result, false, carry, overflow)
             }
             0x4 | 0xB => {
                 if op == 0x4 {
-                    info!("execute: `ADD{} R{},R{},???`", s_str, rd, rn);
+                    info!(
+                        "[0x{:08X}] => execute: `ADD{} R{},R{},???`",
+                        self.registers[15], s_str, rd, rn
+                    );
                 } else {
-                    info!("execute: `CMN ???`");
+                    info!("[0x{:08X}] => execute: `CMN ???`", self.registers[15]);
                 }
                 let (result, carry) = operand1.overflowing_add(operand2);
                 let overflow = (operand1 ^ result) & 0x80000000 > 0;
                 (result, false, carry, overflow)
             }
             0x5 => {
-                info!("execute: `ADC ???`");
+                info!("[0x{:08X}] => execute: `ADC ???`", self.registers[15]);
                 let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_add(operand2);
                 let overflow = (operand1 ^ result) & 0x80000000 > 0;
                 (result, false, carry | carry2, overflow)
             }
             0x6 => {
-                info!("execute: `SBC ???`");
+                info!("[0x{:08X}] => execute: `SBC ???`", self.registers[15]);
                 let (result, carry) = operand2.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_sub(1);
                 let (result, carry3) = operand1.overflowing_sub(result);
@@ -1092,7 +2443,7 @@ impl CPU {
                 (result, false, carry | carry2 | carry3, overflow)
             }
             0x7 => {
-                info!("execute: `RSC ???`");
+                info!("[0x{:08X}] => execute: `RSC ???`", self.registers[15]);
                 let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_sub(1);
                 let (result, carry3) = operand2.overflowing_sub(result);
@@ -1103,19 +2454,28 @@ impl CPU {
                 (result, false, carry | carry2 | carry3, overflow)
             }
             0xC => {
-                info!("execute: `ORR ???`");
+                info!(
+                    "[0x{:08X}] => execute: `ORR R{},R{},#0x{:X}`",
+                    self.registers[15], rd, rn, operand2
+                );
                 (operand1 | operand2, true, false, false)
             }
             0xD => {
-                info!("execute: `MOV R{},#0x{:X}`", rd, operand2);
+                info!(
+                    "[0x{:08X}] => execute: `MOV R{},#0x{:X}`",
+                    self.registers[15], rd, operand2
+                );
                 (operand2, true, false, false)
             }
             0xE => {
-                info!("execute: `BIC ???`");
+                info!(
+                    "[0x{:08X}] => execute: `BIC R{},R{},#0x{:X}`",
+                    self.registers[15], rd, rn, operand2
+                );
                 (operand1 & !(operand2), true, false, false)
             }
             0xF => {
-                info!("execute: `MVN`");
+                info!("[0x{:08X}] => execute: `MVN`", self.registers[15]);
                 (!operand2, true, false, false)
             }
             _ => unreachable!(),
@@ -1129,17 +2489,24 @@ impl CPU {
         // form of instruction should not be used in User mode.
         if set_condition || (op >= 0x8 && op <= 0xB) {
             if rd == 0xF {
-                todo!("Data Processing with R15 as write register and S flag set")
-            }
+                if set_condition {
+                    // Return from IRQ
+                    if self.get_mode() == MODE_IRQ {
+                        warn!("Exiting from IRQ");
+                    }
 
-            self.set_flag_n(result & 0x80000000 == 0x80000000);
-            self.set_flag_z(result == 0);
-
-            if !logical {
-                self.set_flag_c(carry);
-                self.set_flag_v(overflow);
+                    self.reg_cpsr = self.regs_spsr[self.get_mode() as usize];
+                }
             } else {
-                self.set_flag_c(shifter_carry);
+                self.set_flag_n(result & 0x80000000 == 0x80000000);
+                self.set_flag_z(result == 0);
+
+                if !logical {
+                    self.set_flag_c(carry);
+                    self.set_flag_v(overflow);
+                } else {
+                    self.set_flag_c(shifter_carry);
+                }
             }
         }
 
@@ -1156,7 +2523,7 @@ impl CPU {
     }
 
     fn arm_single_data_transfer(&mut self, opcode: u32) {
-        let mut offset = (opcode & 0xFFF);
+        let mut offset = opcode & 0xFFF;
         let rd = (opcode >> 12) & 0xF;
         let rn = (opcode >> 16) & 0xF;
 
@@ -1174,7 +2541,7 @@ impl CPU {
         // Shifted offset
         if imm {
             let rm = (offset & 0xF) as usize;
-            let shift = (offset >> 4);
+            let shift = offset >> 4;
 
             todo!("Implement shifts in LDR/STR");
         }
@@ -1192,7 +2559,11 @@ impl CPU {
         };
 
         if load {
-            info!("execute: `LDR R{},???`", rd);
+            let v = self.read_u32(true, offsetted_addr);
+            info!(
+                "[0x{:08X}] => execute: `LDR R{},???` DBG: {offsetted_addr:08X} => {v:08X}",
+                self.registers[15], rd
+            );
             let val = match (pre_index, byte) {
                 (false, false) => self.read_u32(true, base),
                 (false, true) => self.read_u8(true, base) as u32,
@@ -1201,7 +2572,10 @@ impl CPU {
             };
             self.write_register(rd as u8, val);
         } else {
-            info!("execute: `STR R{},???`", rd);
+            info!(
+                "[0x{:08X}] => execute: `STR R{},???`",
+                self.registers[15], rd
+            );
             let val = self.read_register(rd as u8);
             match (pre_index, byte) {
                 (false, false) => self.write_u32(true, base, val),
@@ -1217,6 +2591,11 @@ impl CPU {
         }
 
         self.step_program_counter(4);
+        self.cycle_count += match (load, rd == 15) {
+            (false, _) => 2,
+            (true, false) => 3,
+            (true, true) => 3 + 2,
+        }
     }
 
     fn arm_msr(&mut self, opcode: u32) {
@@ -1225,10 +2604,16 @@ impl CPU {
         let rm_val = self.read_register(rm);
 
         if dest_spsr {
-            info!("execute: `MSR SPSR,R{}`", rm);
+            info!(
+                "[0x{:08X}] => execute: `MSR SPSR,R{}`",
+                self.registers[15], rm
+            );
             self.regs_spsr[self.get_mode() as usize] = rm_val;
         } else {
-            info!("execute: `MSR CPSR,R{}`", rm);
+            info!(
+                "[0x{:08X}] => execute: `MSR CPSR,R{}`",
+                self.registers[15], rm
+            );
 
             if self.get_mode() == MODE_USER {
                 self.reg_cpsr = (self.reg_cpsr & 0x0FFFFFFF) | (rm_val & 0xF0000000);
@@ -1238,6 +2623,7 @@ impl CPU {
         }
 
         self.step_program_counter(4);
+        self.cycle_count += 1;
     }
 
     fn arm_branch_exchange(&mut self, opcode: u32) {
@@ -1245,17 +2631,94 @@ impl CPU {
         let rm_val = self.read_register(rm);
         let thumb = (rm_val & 0x1) == 0x1;
 
-        info!("execute: `BX R{}` => thumb={}", rm, thumb);
+        info!(
+            "[0x{:08X}] => execute: `BX R{}` => thumb={}",
+            self.registers[15], rm, thumb
+        );
 
         self.set_thumb(thumb);
         match thumb {
             false => self.set_program_counter(rm_val),
             true => self.set_program_counter(rm_val & 0xFFFFFFFE),
         }
+
+        self.cycle_count += 3;
+    }
+
+    fn arm_halfword_data_transfer_imm(&mut self, opcode: u32) {
+        let offset = ((opcode >> 4) & 0xF0) | (opcode & 0xF);
+        let h = (opcode & 0x20) != 0;
+        let s = (opcode & 0x40) != 0;
+        let load = (opcode & 0x100000) != 0;
+        let write_back = (opcode & 0x200000) != 0;
+        let up = (opcode & 0x800000) != 0;
+        let pre = (opcode & 0x1000000) != 0;
+
+        let rd = ((opcode >> 12) & 0xF) as u8;
+        let rn = ((opcode >> 16) & 0xF) as u8;
+        let mut base = match rn {
+            15 => self.read_register(rn) + 8,
+            _ => self.read_register(rn),
+        };
+
+        if pre {
+            base = match up {
+                false => base.wrapping_sub(offset),
+                true => base.wrapping_add(offset),
+            }
+        }
+
+        match (s, h) {
+            (false, false) => {
+                // SWP Instruction
+                todo!("SWP");
+            }
+            (false, true) => {
+                // Unsigned Halfwords
+                match load {
+                    false => {
+                        info!("execute: `STRH R{rd},[R{rn},#0x{offset:X}]`");
+                        let val = self.read_register(rd) & 0xFFFF;
+                        self.write_u32(true, base, val);
+                    }
+                    true => {
+                        info!("execute: `LDRH R{rd},[R{rn},#0x{offset:X}]`");
+                        let val = self.read_u32(true, base) & 0xFFFF;
+                        self.write_register(rd, val);
+                    }
+                }
+            }
+            (true, false) => {
+                // Signed Byte
+                todo!("Signed Byte");
+            }
+            (true, true) => {
+                // Signed Halfwords
+                todo!("Signed Halfwords");
+            }
+        }
+
+        if !pre {
+            base = match up {
+                false => base.wrapping_sub(offset),
+                true => base.wrapping_add(offset),
+            }
+        }
+
+        if write_back || !pre {
+            self.write_register(rn, base);
+        }
+
+        self.step_program_counter(4);
+        self.cycle_count += match (load, rd == 15) {
+            (false, _) => 2,
+            (true, false) => 3,
+            (true, true) => 3 + 2,
+        }
     }
 
     fn arm_block_data_transfer(&mut self, opcode: u32) {
-        let rlist = (opcode & 0xFFFF);
+        let rlist = opcode & 0xFFFF;
         let rn = ((opcode >> 16) & 0xF) as u8;
         let load = (opcode & 0x100000) != 0;
         let write_back = (opcode & 0x200000) != 0;
@@ -1265,44 +2728,129 @@ impl CPU {
 
         let mut ptr = self.read_register(rn);
 
-        debug!(
-            "rn: {}, load: {}, wb: {}, psr: {}, up: {}, pre: {}, rlist: {:016b}, ptr: {:08X}",
-            rn, load, write_back, psr, up, pre, rlist, ptr
-        );
-
-        if load {
-            todo!("Load");
+        if psr {
+            todo!("S bit set (r15={})", (rlist & 0x8000) != 0);
         }
 
-        if psr && (rlist & 0x8000) != 0 {
-            todo!("R15 set and S bit set");
-        }
+        let mut cycles_n = 0;
 
         for i in 0..16 {
             if (rlist & (1 << i)) != 0 {
                 if pre {
                     match up {
-                        false => ptr.wrapping_sub(1),
-                        true => ptr.wrapping_add(1),
+                        false => ptr.wrapping_sub(4),
+                        true => ptr.wrapping_add(4),
                     };
                 }
 
-                self.write_u32(true, ptr, self.read_register(i));
+                match load {
+                    false => {
+                        let val = match i == 15 {
+                            false => self.read_register(i),
+                            true => self.read_register(i).wrapping_add(12),
+                        };
+
+                        self.write_u32(true, ptr, val);
+                    }
+                    true => {
+                        let val = self.read_u32(true, ptr);
+                        self.write_register(i, val);
+
+                        if i == 15 {
+                            cycles_n += 2;
+                        }
+                    }
+                }
 
                 if !pre {
                     match up {
-                        false => ptr.wrapping_sub(1),
-                        true => ptr.wrapping_add(1),
+                        false => ptr.wrapping_sub(4),
+                        true => ptr.wrapping_add(4),
                     };
                 }
 
                 if write_back {
                     self.write_register(rn, ptr);
                 }
+
+                cycles_n += 1;
             }
         }
 
         self.step_program_counter(4);
+        self.cycle_count += match load {
+            false => 1 + cycles_n,
+            true => 2 + cycles_n,
+        }
+    }
+
+    /// Performs LDM or STM based on flags
+    /// Updates `self.cycle_count` accordingly
+    fn operation_ldm_stm(
+        &mut self,
+        r_base: u8,
+        r_list: u16,
+        load: bool,
+        wb: bool,
+        pre: bool,
+        up: bool,
+        s_bit: bool,
+    ) {
+        let mut ptr = self.read_register(r_base);
+
+        if s_bit {
+            todo!("S bit set (r15={})", (r_list & 0x8000) != 0);
+        }
+
+        let mut cycles_n = 0;
+
+        for i in 0..16 {
+            if (r_list & (1 << i)) != 0 {
+                if pre {
+                    ptr = match up {
+                        false => ptr.wrapping_sub(4),
+                        true => ptr.wrapping_add(4),
+                    };
+                }
+
+                match load {
+                    false => {
+                        let val = match i == 15 {
+                            false => self.read_register(i),
+                            true => self.read_register(i).wrapping_add(12),
+                        };
+
+                        self.write_u32(true, ptr, val);
+                    }
+                    true => {
+                        let val = self.read_u32(true, ptr);
+                        self.write_register(i, val);
+
+                        if i == 15 {
+                            cycles_n += 2;
+                        }
+                    }
+                }
+
+                if !pre {
+                    ptr = match up {
+                        false => ptr.wrapping_sub(4),
+                        true => ptr.wrapping_add(4),
+                    };
+                }
+
+                if wb {
+                    self.write_register(r_base, ptr);
+                }
+
+                cycles_n += 1;
+            }
+        }
+
+        self.cycle_count += match load {
+            false => 1 + cycles_n,
+            true => 2 + cycles_n,
+        }
     }
 
     pub fn opcode_match(opcode: u32, mask_clr: u32, mask_set: u32) -> bool {
@@ -1317,6 +2865,8 @@ impl CPU {
         if !self.should_execute(cond) {
             info!("Skipped execution");
             self.step_program_counter(4);
+
+            self.cycle_count += 1;
             return;
         }
 
@@ -1332,6 +2882,8 @@ impl CPU {
                     self.arm_branch_exchange(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_HW_REG_CLR, ARM_MASK_HW_REG_SET) {
                     todo!("Halfword Data Transfer: register offset");
+                } else if Self::opcode_match(opcode, ARM_MASK_HW_IMM_CLR, ARM_MASK_HW_IMM_SET) {
+                    self.arm_halfword_data_transfer_imm(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_MRS_CLR, ARM_MASK_MRS_SET) {
                     todo!("MRS");
                 } else if Self::opcode_match(opcode, ARM_MASK_MSR_CLR, ARM_MASK_MSR_SET) {
@@ -1351,12 +2903,21 @@ impl CPU {
             }
             0x80..=0x9F => self.arm_block_data_transfer(opcode),
             0xA0..=0xBF => self.arm_branch(opcode),
-            0xC0..=0xDF => todo!("Coprocessor data transfer"),
+            0xC0..=0xDF => panic!(
+                "Coprocessor data transfer @ {:08X}",
+                self.get_program_counter()
+            ),
             0xE0..=0xEF => {
                 if (opcode & 0x10) == 0 {
-                    todo!("Coprocessor data operation");
+                    panic!(
+                        "Coprocessor data operation @ {:08X}",
+                        self.get_program_counter()
+                    );
                 } else {
-                    todo!("Coprocessor register transfer");
+                    panic!(
+                        "Coprocessor register transfer @ {:08X}",
+                        self.get_program_counter()
+                    );
                 }
             }
             0xF0..=0xFF => todo!("Software Interrupt"),
@@ -1407,8 +2968,748 @@ mod tests {
 
         // MOV R0,#0x12
         let opcode: u32 = 0b1110_00_1_1101_0_0000_0000_000000010010;
-        cpu.execute(opcode);
+        cpu.execute_arm(opcode);
 
         assert!(cpu.read_register(0) == 0x12);
+    }
+
+    // Thumb Format1
+    #[test]
+    fn thumb_move_shifted_register() {
+        let mut cpu = CPU::new();
+
+        let rs = 0b101;
+        let rs_signed = 0x97000000;
+        let offset = 2;
+
+        let opcode_lsl = 0b0000000000001000 | (offset << 6);
+        let opcode_lsr = 0b0000100000001000 | (offset << 6);
+        let opcode_asr = 0b0001000000001000 | (offset << 6);
+
+        cpu.reg_cpsr = 0x00000000;
+        cpu.write_register(1, rs);
+        cpu.execute_thumb(opcode_lsl);
+        assert_eq!(cpu.read_register(0), rs << offset);
+        assert_eq!(cpu.get_flag_n(), false);
+        assert_eq!(cpu.get_flag_z(), false);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        // Shift to zero
+        cpu.reg_cpsr = 0x00000000;
+        cpu.write_register(1, 0x2);
+        cpu.execute_thumb(opcode_lsr);
+        assert_eq!(cpu.read_register(0), 0x2 >> offset);
+        assert_eq!(cpu.get_flag_n(), false);
+        assert_eq!(cpu.get_flag_z(), true);
+        assert_eq!(cpu.get_flag_c(), true);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        cpu.reg_cpsr = 0x00000000;
+        cpu.write_register(1, rs);
+        cpu.execute_thumb(opcode_lsr);
+        assert_eq!(cpu.read_register(0), rs >> offset);
+        assert_eq!(cpu.get_flag_n(), false);
+        assert_eq!(cpu.get_flag_z(), false);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        cpu.reg_cpsr = 0x00000000;
+        cpu.write_register(1, rs);
+        cpu.execute_thumb(opcode_asr);
+        assert_eq!(cpu.read_register(0), rs >> offset);
+        assert_eq!(cpu.get_flag_n(), false);
+        assert_eq!(cpu.get_flag_z(), false);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        // ASR signed
+        cpu.reg_cpsr = 0x00000000;
+        cpu.write_register(1, rs_signed);
+        cpu.execute_thumb(opcode_asr);
+        assert_eq!(cpu.read_register(0), ((rs_signed as i32) >> 2) as u32);
+        assert_eq!(cpu.get_flag_n(), true);
+        assert_eq!(cpu.get_flag_z(), false);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+    }
+
+    /// Thumb Format2
+    #[test]
+    fn thumb_add_subtract() {
+        let mut cpu = CPU::new();
+
+        let rd = 0;
+        let rs = 8;
+        let rn = 4;
+        let imm: u16 = 2 << 6;
+
+        // Rd=0, Rs=1, Rn=2, Imm = 2
+        let opcode_reg_add: u16 = 0b0001100010001000;
+        let opcode_imm_add: u16 = 0b0001110000001000 | imm;
+        let opcode_reg_sub: u16 = 0b0001101010001000;
+        let opcode_imm_sub: u16 = 0b0001111010001000 | imm;
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rs);
+        cpu.write_register(2, rn);
+        cpu.execute_thumb(opcode_reg_add);
+        assert!(cpu.read_register(0) == 12);
+        assert!(cpu.read_register(1) == rs);
+        assert!(cpu.read_register(2) == rn);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rs);
+        cpu.write_register(2, rn);
+        cpu.execute_thumb(opcode_imm_add);
+        assert!(cpu.read_register(0) == 10);
+        assert!(cpu.read_register(1) == rs);
+        assert!(cpu.read_register(2) == rn);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rs);
+        cpu.write_register(2, rn);
+        cpu.execute_thumb(opcode_reg_sub);
+        assert!(cpu.read_register(0) == 4);
+        assert!(cpu.read_register(1) == rs);
+        assert!(cpu.read_register(2) == rn);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rs);
+        cpu.write_register(2, rn);
+        cpu.execute_thumb(opcode_imm_sub);
+        assert!(cpu.read_register(0) == 6);
+        assert!(cpu.read_register(1) == rs);
+        assert!(cpu.read_register(2) == rn);
+
+        // Status checks Negative
+        cpu.write_register(1, 0x80000001);
+        cpu.write_register(2, 1);
+        cpu.reg_cpsr = 0x0;
+        cpu.execute_thumb(opcode_reg_add);
+        assert_eq!(cpu.get_flag_n(), true);
+        assert_eq!(cpu.get_flag_z(), false);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        // Status checks Zero
+        cpu.write_register(1, 0);
+        cpu.write_register(2, 0);
+        cpu.reg_cpsr = 0x0;
+        cpu.execute_thumb(opcode_reg_add);
+        assert_eq!(cpu.get_flag_n(), false);
+        assert_eq!(cpu.get_flag_z(), true);
+        assert_eq!(cpu.get_flag_c(), false);
+        assert_eq!(cpu.get_flag_v(), false);
+
+        // Carry & Overflow
+        cpu.write_register(1, 0xFFFFFFFF);
+        cpu.write_register(2, 1);
+        cpu.reg_cpsr = 0x0;
+        cpu.execute_thumb(opcode_reg_add);
+        assert_eq!(cpu.get_flag_c(), true);
+        assert_eq!(cpu.get_flag_v(), true);
+    }
+
+    /// Thumb Format3
+    #[test]
+    fn thumb_mov_cmp_add_sub_imm() {
+        let mut cpu = CPU::new();
+
+        // Rd => 0, Offset => 8
+        let offset = 8;
+        let rd = 24;
+
+        let opcode_mov = 0x2000;
+        let opcode_cmp = 0x2800 | offset;
+        let opcode_add = 0x3000;
+        let opcode_sub = 0x3800 | offset;
+
+        // MOV
+        cpu.write_register(0, rd);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_mov | 8);
+        assert_eq!(cpu.read_register(0), 8);
+        assert!(!cpu.get_flag_n());
+        assert!(!cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(!cpu.get_flag_v());
+
+        // MOV zero
+        cpu.write_register(0, rd);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_mov | 0);
+        assert_eq!(cpu.read_register(0), 0);
+        assert!(!cpu.get_flag_n());
+        assert!(cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(!cpu.get_flag_v());
+
+        // CMP
+
+        // ADD
+        cpu.write_register(0, rd);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_add | 8);
+        assert_eq!(cpu.read_register(0), rd + 8);
+        assert!(!cpu.get_flag_n());
+        assert!(!cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(!cpu.get_flag_v());
+
+        // ADD zero
+        cpu.write_register(0, 0);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_add | 0);
+        assert_eq!(cpu.read_register(0), 0);
+        assert!(!cpu.get_flag_n());
+        assert!(cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(!cpu.get_flag_v());
+
+        // ADD negative & overflow
+        cpu.write_register(0, 0x7FFFFFFF);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_add | 1);
+        assert_eq!(cpu.read_register(0), 0x80000000);
+        assert!(cpu.get_flag_n());
+        assert!(!cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(cpu.get_flag_v());
+
+        // ADD zero, carry
+        cpu.write_register(0, 0xFFFFFFFF);
+        cpu.reg_cpsr = 0;
+        cpu.execute_thumb(opcode_add | 1);
+        assert_eq!(cpu.read_register(0), 0x0);
+        assert!(cpu.get_flag_z());
+        assert!(cpu.get_flag_c());
+
+        // SUB
+    }
+
+    /// Thumb Format4
+    #[ignore]
+    #[test]
+    fn thumb_alu() {}
+
+    /// Thumb Format5
+    #[test]
+    fn thumb_hi_register_op_bx() {
+        let mut cpu = CPU::new();
+
+        let opcode_bx_low = 0b0100011100000000;
+        let opcode_bx_high = 0b0100011101000000;
+
+        // BX Rs (0)
+        let addr_thumb = 0x4D500001;
+
+        cpu.write_register(0, addr_thumb);
+        cpu.execute_thumb(opcode_bx_low);
+        assert_eq!(cpu.get_program_counter(), addr_thumb & 0xFFFFFFFE);
+        assert!(cpu.is_thumb());
+
+        let addr_arm = 0x4D500000;
+        cpu.write_register(0, addr_arm);
+        cpu.execute_thumb(opcode_bx_low);
+        assert_eq!(cpu.get_program_counter(), addr_arm & 0xFFFFFFFE);
+        assert!(!cpu.is_thumb());
+
+        // BX Hs (8)
+        let addr_thumb = 0x4D500001;
+
+        cpu.write_register(8, addr_thumb);
+        cpu.execute_thumb(opcode_bx_high);
+        assert_eq!(cpu.get_program_counter(), addr_thumb & 0xFFFFFFFE);
+        assert!(cpu.is_thumb());
+
+        let addr_arm = 0x4D500000;
+        cpu.write_register(8, addr_arm);
+        cpu.execute_thumb(opcode_bx_high);
+        assert_eq!(cpu.get_program_counter(), addr_arm & 0xFFFFFFFE);
+        assert!(!cpu.is_thumb());
+    }
+
+    /// Thumb Format6
+    #[test]
+    fn thumb_pc_relative_load() {
+        let mut cpu = CPU::new();
+
+        let offset = 8;
+        let opcode = 0x4800 | ((offset as u16) >> 2);
+        let val = 0xDEADBEEF;
+
+        cpu.reg_cpsr = 0x4D504D50;
+        cpu.set_program_counter(0x02000000);
+        cpu.write_u32(false, 0x02000000 + offset + 4, val);
+        cpu.execute_thumb(opcode);
+        assert_eq!(cpu.read_u32(false, 0x02000000 + offset + 4), val);
+        assert_eq!(cpu.read_register(0), val);
+        assert_eq!(cpu.reg_cpsr, 0x4D504D50);
+    }
+
+    /// Thumb Format7
+    #[test]
+    fn thumb_load_store_register_offset() {
+        let mut cpu = CPU::new();
+
+        // Rd => 0, Rb => 1, Ro => 2
+        let rb = 0x03000000;
+        let rd = 0xDEADBEEF;
+        let ro = 0x8;
+        let addr = rb + ro;
+
+        let opcode_str = 0x5088;
+        let opcode_strb = 0x5488;
+        let opcode_ldr = 0x5888;
+        let opcode_ldrb = 0x5C88;
+
+        // STR
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_register(2, ro);
+        cpu.execute_thumb(opcode_str);
+        assert_eq!(cpu.read_u32(false, addr), rd);
+        cpu.write_u32(false, addr, 0);
+
+        // STRB
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_register(2, ro);
+        cpu.execute_thumb(opcode_strb);
+        assert_eq!(cpu.read_u8(false, addr), (rd & 0xFF) as u8);
+
+        // LDR
+        cpu.write_register(0, 0);
+        cpu.write_register(1, rb);
+        cpu.write_register(2, ro);
+        cpu.write_u32(false, addr, rd);
+        cpu.execute_thumb(opcode_ldr);
+        assert_eq!(cpu.read_register(0), rd);
+
+        // LDRB
+        cpu.write_register(0, 0);
+        cpu.write_register(1, rb);
+        cpu.write_register(2, ro);
+        cpu.write_u8(false, addr, (rd & 0xFF) as u8);
+        cpu.execute_thumb(opcode_ldrb);
+        assert_eq!(cpu.read_register(0), rd & 0xFF);
+    }
+
+    /// Thumb Format8
+    #[test]
+    fn thumb_load_store_sign_extended_byte_halfword() {
+        let mut cpu = CPU::new();
+
+        // Rd => 0
+        // Ro => 1
+        // Rb => 2
+        let rd = 0xDEADBEEF;
+        let rd_sbh = 0b1001000110100_10101010_11001101;
+        let ro = 0x04;
+        let rb = 0x03000000;
+
+        let opcode_strh = 0x5250;
+        let opcode_ldrh = 0x5A50;
+        let opcode_ldsb = 0x5650;
+        let opcode_ldsh = 0x5E50;
+
+        // STRH R0,[R2,R1]
+        cpu.write_register(0, rd);
+        cpu.write_register(1, ro);
+        cpu.write_register(2, rb);
+        cpu.execute_thumb(opcode_strh);
+        assert_eq!(cpu.read_u32(false, rb + ro), rd & 0xFFFF);
+
+        // LDRH R0,[R2,R1]
+        cpu.write_register(0, 0);
+        cpu.write_register(1, ro);
+        cpu.write_register(2, rb);
+        cpu.write_u32(false, rb + ro, rd);
+        cpu.execute_thumb(opcode_ldrh);
+        assert_eq!(cpu.read_register(0), rd & 0xFFFF);
+
+        // LDSB R0,[R2,R1]
+        cpu.write_register(0, 0);
+        cpu.write_register(1, ro);
+        cpu.write_register(2, rb);
+        cpu.write_u32(false, rb + ro, rd_sbh);
+        cpu.execute_thumb(opcode_ldsb);
+        assert_eq!(cpu.read_register(0), (rd_sbh & 0xFF) | 0xFFFFFF00);
+
+        // LDSH R0,[R2,R1]
+        cpu.write_register(0, 0);
+        cpu.write_register(1, ro);
+        cpu.write_register(2, rb);
+        cpu.write_u32(false, rb + ro, rd_sbh);
+        cpu.execute_thumb(opcode_ldsh);
+        assert_eq!(cpu.read_register(0), (rd_sbh & 0xFFFF) | 0xFFFF0000);
+    }
+
+    /// Thumb Format9
+    #[test]
+    fn thumb_load_store_immediate() {
+        let mut cpu = CPU::new();
+
+        let rd: u32 = 2;
+        let rb: u32 = 0x02000000;
+        let offset: u16 = 8;
+        let val: u32 = 0xdeadbeef;
+        let val8: u8 = 0x4D;
+
+        // Rd=0, Rb=1, Offset=10
+        let opcode_str: u16 = 0b0110000000001000 | ((offset >> 2) << 6);
+        let opcode_ldr: u16 = 0b0110100000001000 | ((offset >> 2) << 6);
+        let opcode_strb: u16 = 0b0111000000001000 | (offset << 6);
+        let opcode_ldrb: u16 = 0b0111100000001000 | (offset << 6);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_u32(false, rb + offset as u32, val);
+        cpu.execute_thumb(opcode_str);
+        assert!(cpu.read_u32(false, rb + offset as u32) == rd);
+        assert!(cpu.read_register(0) == rd);
+        assert!(cpu.read_register(1) == rb);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_u32(false, rb + offset as u32, val);
+        cpu.execute_thumb(opcode_ldr);
+        assert!(cpu.read_register(0) == val);
+        assert!(cpu.read_register(1) == rb);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_u8(false, rb + offset as u32, val8);
+        cpu.execute_thumb(opcode_strb);
+        assert!(cpu.read_u8(false, rb + offset as u32) == (rd as u8));
+        assert!(cpu.read_register(0) == rd);
+        assert!(cpu.read_register(1) == rb);
+
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.write_u8(false, rb + offset as u32, val8);
+        cpu.execute_thumb(opcode_ldrb);
+        assert!(cpu.read_u8(false, rb + offset as u32) == val8);
+        assert!(cpu.read_register(0) == (val8 as u32));
+        assert!(cpu.read_register(1) == rb);
+    }
+
+    /// Thumb Format10
+    #[test]
+    fn thumb_load_store_halfword() {
+        let mut cpu = CPU::new();
+
+        // Rd => 0, Rb => 1, Imm => 8
+        let rd = 0xDEADBEEF;
+        let rb = 0x03000000;
+        let imm = 8;
+        let addr = rb + (imm as u32);
+
+        let opcode_strh = 0x8008 | ((imm >> 1) << 6);
+        let opcode_ldrh = 0x8808 | ((imm >> 1) << 6);
+
+        // STRH
+        cpu.write_register(0, rd);
+        cpu.write_register(1, rb);
+        cpu.execute_thumb(opcode_strh);
+        assert_eq!(cpu.read_u32(false, addr), rd & 0xFFFF);
+
+        // LDRH
+        cpu.write_register(0, 0);
+        cpu.write_register(1, rb);
+        cpu.write_u32(false, addr, rd);
+        cpu.execute_thumb(opcode_ldrh);
+        assert_eq!(cpu.read_register(0), rd & 0xFFFF);
+    }
+
+    /// Thumb Format11
+    #[test]
+    fn thumb_sp_relative_load_store() {
+        let mut cpu = CPU::new();
+
+        let rd = 0xDEADBEEF;
+        let sp = 0x03000000;
+        let offset = 8;
+        let opcode_str = 0x9000 | (offset >> 2);
+        let opcode_ldr = 0x9800 | (offset >> 2);
+
+        let offset = offset as u32;
+
+        // STR
+        cpu.write_register(13, sp);
+        cpu.write_register(0, rd);
+        cpu.execute_thumb(opcode_str);
+        assert_eq!(cpu.read_u32(false, sp + offset), rd);
+
+        // LDR
+        cpu.write_register(13, sp);
+        cpu.write_register(0, 0);
+        cpu.execute_thumb(opcode_ldr);
+        assert_eq!(cpu.read_register(0), rd);
+    }
+
+    // Thumb Format12
+    #[test]
+    fn thumb_load_address() {
+        let mut cpu = CPU::new();
+
+        // rd=0, word8=16
+        let val = 16;
+        let opcode_pc = 0xA000 | (val >> 2);
+        let opcode_sp = 0xA800 | (val >> 2);
+
+        let val = val as u32;
+        // PC is offset at 4
+        cpu.set_program_counter(0x0000);
+
+        cpu.write_register(0, 0x0);
+        cpu.execute_thumb(opcode_pc);
+        assert_eq!(cpu.read_register(0), (val + 4));
+
+        // Bit 1 is forced to 0 when using PC
+        cpu.set_program_counter(0x0002);
+        cpu.write_register(0, 0x0);
+        cpu.execute_thumb(opcode_pc);
+        assert_eq!(cpu.read_register(0), (val + 4));
+
+        // SP check
+        cpu.write_register(13, 0x1000);
+        cpu.write_register(0, 0x0);
+        cpu.execute_thumb(opcode_sp);
+        assert_eq!(cpu.read_register(0), (0x1000 + val));
+    }
+
+    /// Thumb Format13
+    #[test]
+    fn thumb_offset_to_sp() {
+        let mut cpu = CPU::new();
+
+        let imm = 16;
+        let opcode_add = 0xB000 | (imm >> 2);
+        let opcode_sub = 0xB080 | (imm >> 2);
+
+        let cpsr = 0xDEADBEEF;
+        cpu.reg_cpsr = cpsr;
+
+        cpu.write_register(13, 0);
+        cpu.execute_thumb(opcode_add);
+        assert_eq!(cpu.read_register(13), 16);
+        assert_eq!(cpu.reg_cpsr, cpsr);
+
+        cpu.write_register(13, 16);
+        cpu.execute_thumb(opcode_sub);
+        assert_eq!(cpu.read_register(13), 0);
+        assert_eq!(cpu.reg_cpsr, cpsr);
+    }
+
+    // Thumb Format14
+    #[test]
+    fn thumb_push_pop() {
+        let mut cpu = CPU::new();
+
+        let base = 0x03000000;
+
+        // Push/pop R0 & R2
+        let opcode_push = 0b1011010000000000 | (1 << 0) | (1 << 2);
+        let opcode_push_lr = 0b1011010100000000 | (1 << 0) | (1 << 2);
+        let opcode_pop = 0b1011110000000000 | (1 << 0) | (1 << 2);
+        let opcode_pop_lr = 0b1011110100000000 | (1 << 0) | (1 << 2);
+
+        let r0 = 0x0123;
+        let r1 = 0x4567;
+        let r2 = 0x89ab;
+        let rl = 0xdeadbeef;
+        cpu.write_register(0, r0);
+        cpu.write_register(1, r1);
+        cpu.write_register(2, r2);
+        cpu.write_register(14, rl);
+
+        // Push {R0, R2}
+        cpu.write_register(13, base | 16);
+        cpu.execute_thumb(opcode_push);
+        assert_eq!(cpu.read_register(13), base | 8);
+        assert_eq!(cpu.read_u32(false, base | 8), r0);
+        assert_eq!(cpu.read_u32(false, base | 12), r2);
+
+        // Pop {R2, R0}
+        cpu.write_register(0, 0);
+        cpu.write_register(1, 0);
+        cpu.write_register(2, 0);
+        cpu.execute_thumb(opcode_pop);
+        assert_eq!(cpu.read_register(0), r0);
+        assert_eq!(cpu.read_register(1), 0);
+        assert_eq!(cpu.read_register(2), r2);
+
+        //// Push {R0, R2, LR}
+        cpu.write_register(0, r0);
+        cpu.write_register(1, r1);
+        cpu.write_register(2, r2);
+        cpu.write_register(14, rl);
+
+        cpu.write_u32(false, base, 0);
+        cpu.write_u32(false, base | 4, 0);
+        cpu.write_u32(false, base | 8, 0);
+        cpu.write_u32(false, base | 12, 0);
+        cpu.write_u32(false, base | 16, 0);
+        cpu.write_register(13, base | 16);
+        cpu.execute_thumb(opcode_push_lr);
+        assert_eq!(cpu.read_register(13), base | 4);
+        assert_eq!(cpu.read_u32(false, base | 4), r0);
+        assert_eq!(cpu.read_u32(false, base | 8), r2);
+        assert_eq!(cpu.read_u32(false, base | 12), rl);
+
+        //// Pop {R2, R0, PC}
+        cpu.write_register(0, 0);
+        cpu.write_register(1, 0);
+        cpu.write_register(2, 0);
+        cpu.set_program_counter(0);
+        cpu.execute_thumb(opcode_pop_lr);
+        assert_eq!(cpu.read_register(0), r0);
+        assert_eq!(cpu.read_register(1), 0);
+        assert_eq!(cpu.read_register(2), r2);
+        assert_eq!(cpu.get_program_counter(), rl + 2);
+    }
+
+    /// Thumb Format15
+    #[test]
+    fn thumb_multiple_load_store() {
+        let mut cpu = CPU::new();
+
+        // STMIA/LDMIA R3!,{R0, R2}
+        let rb = 0x03000000;
+        let r0 = 0x1234;
+        let r2 = 0x9abc;
+        let opcode_store = 0xC300 | (1 << 0) | (1 << 2);
+        let opcode_load = 0xCB00 | (1 << 0) | (1 << 2);
+
+        // STMIA R3!,{R0, R2}
+        cpu.write_register(0, r0);
+        cpu.write_register(2, r2);
+        cpu.write_register(3, rb);
+        cpu.execute_thumb(opcode_store);
+        assert_eq!(cpu.read_u32(false, rb), r0);
+        assert_eq!(cpu.read_u32(false, rb + 4), r2);
+        assert_eq!(cpu.read_register(3), rb + 8);
+
+        // STMIA R3!,{R0, R2}
+        cpu.write_register(0, 0);
+        cpu.write_register(2, 0);
+        cpu.write_register(3, rb);
+        cpu.execute_thumb(opcode_load);
+        assert_eq!(cpu.read_register(0), r0);
+        assert_eq!(cpu.read_register(2), r2);
+        assert_eq!(cpu.read_register(3), rb + 8);
+    }
+
+    /// Thumb Format16
+    #[ignore]
+    #[test]
+    fn thumb_conditional_branch() {}
+
+    /// Thumb Format17
+    #[ignore]
+    #[test]
+    fn thumb_swi() {}
+
+    /// Thumb Format18
+    #[test]
+    fn thumb_unconditional_branch() {
+        let mut cpu = CPU::new();
+
+        // Forward
+        let offset = 8;
+        let opcode = 0xE000 | (offset >> 1);
+
+        cpu.set_program_counter(0);
+        cpu.execute_thumb(opcode);
+        assert_eq!(cpu.get_program_counter(), (offset as u32) + 4);
+
+        // Backward (-8)
+        let offset = 0xFF8;
+        let opcode = 0xE000 | (offset >> 1);
+
+        let pc = 1000;
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode);
+        assert_eq!(cpu.get_program_counter(), pc + 4 - 8);
+    }
+
+    /// Thumb Format19
+    #[test]
+    fn thumb_long_branch_link() {
+        let mut cpu = CPU::new();
+
+        // Forward
+        let addr: u32 = 0x8;
+        let offset = (addr >> 1) & 0x3FFFFF;
+        let offset_high = ((offset >> 11) & 0x3FF) as u16;
+        let offset_low = (offset & 0x3FF) as u16;
+
+        let opcode_high = 0xF000 | offset_high;
+        let opcode_low = 0xF800 | offset_low;
+
+        let lr_val = 4 + ((offset_high as u32) << 12);
+
+        // BL0
+        cpu.set_program_counter(0);
+        cpu.execute_thumb(opcode_high);
+        assert_eq!(cpu.read_register(14), lr_val);
+        assert_eq!(cpu.get_program_counter(), 2);
+
+        // BL1
+        cpu.execute_thumb(opcode_low);
+        assert_eq!(
+            cpu.get_program_counter(),
+            lr_val + ((offset_low as u32) << 1)
+        );
+        assert_eq!(cpu.read_register(14), 4 | 1);
+        assert_eq!(cpu.get_program_counter(), 4 + addr);
+
+        // Backward (-8)
+        let addr: u32 = 0x7FFFF8;
+        let offset = (addr >> 1) & 0x3FFFFF;
+        let offset_high = ((offset >> 11) & 0x7FF) as u16;
+        let offset_low = (offset & 0x7FF) as u16;
+
+        let opcode_high = 0xF000 | offset_high;
+        let opcode_low = 0xF800 | offset_low;
+        let pc = 1000;
+
+        // BL0
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode_high);
+        assert_eq!(cpu.get_program_counter(), pc + 2);
+
+        // BL1
+        cpu.execute_thumb(opcode_low);
+        assert_eq!(cpu.read_register(14), (pc + 4) | 1);
+        assert_eq!(cpu.get_program_counter(), pc + 4 - 8);
+    }
+
+    #[test]
+    fn memcpy() {
+        let mut cpu = CPU::new();
+
+        let src: u32 = 0x02000000;
+        let dest: u32 = 0x03000000;
+        let val: u32 = 0xDEADBEEF;
+
+        cpu.write_u32(false, src, val);
+        cpu.memcpy(dest, src, 4);
+        assert!(cpu.read_u32(false, dest) == val);
+    }
+
+    #[test]
+    fn memfill32() {
+        let mut cpu = CPU::new();
+
+        let dest: u32 = 0x03000000;
+        let val: u32 = 0xDEADBEEF;
+
+        cpu.memfill32(dest, val, 2);
+        assert!(cpu.read_u32(false, dest) == val);
+        assert!(cpu.read_u32(false, dest + 4) == val);
+        assert!(cpu.read_u32(false, dest + 8) != val);
     }
 }

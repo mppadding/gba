@@ -1,6 +1,19 @@
-use log::debug;
-
 use crate::cpu::*;
+
+fn rlist_to_string(rlist: u8, str: &mut String) {
+    let mut first = true;
+
+    for i in 0..8 {
+        if (rlist & (1 << i)) != 0 {
+            if first {
+                str.push_str(format!("{{R{}", i).as_str());
+                first = false;
+            } else {
+                str.push_str(format!(",R{}", i).as_str());
+            }
+        }
+    }
+}
 
 pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
     let instr = ((opcode >> 20) & 0xFF) as u8;
@@ -23,7 +36,21 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
             } else if CPU::opcode_match(opcode, ARM_MASK_HW_REG_CLR, ARM_MASK_HW_REG_SET) {
                 (
                     "Halfword Data Transfer: register offset".to_string(),
-                    "???".to_string(),
+                    "COND ---P U-WL Rn__ Rd__ ---- -SH- Rm__".to_string(),
+                )
+            } else if CPU::opcode_match(opcode, ARM_MASK_HW_IMM_CLR, ARM_MASK_HW_IMM_SET) {
+                let offset = (((opcode >> 4) & 0xF0) as u8) | ((opcode & 0xF) as u8);
+                let h = (opcode & 0x20) != 0;
+                let s = (opcode & 0x40) != 0;
+
+                let load = (opcode & 0x100000) != 0;
+                let write_back = (opcode & 0x200000) != 0;
+                let up = (opcode & 0x800000) != 0;
+                let pre = (opcode & 0x1000000) != 0;
+
+                (
+                    "Halfword Data Transfer: immediate offset".to_string(),
+                    "COND ---P U-WL Rn__ Rd__ OffH -SH- OffL".to_string(),
                 )
             } else if CPU::opcode_match(opcode, ARM_MASK_MRS_CLR, ARM_MASK_MRS_SET) {
                 let bits = "COND ---- -P-- ---- Rd__  ---- ---- ----".to_string();
@@ -80,7 +107,7 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
             if CPU::opcode_match(opcode, ARM_MASK_UNDEF_CLR, ARM_MASK_UNDEF_SET) {
                 ("???".to_string(), "???".to_string())
             } else {
-                let mut offset = (opcode & 0xFFF);
+                let mut offset = opcode & 0xFFF;
                 let rd = (opcode >> 12) & 0xF;
                 let rn = (opcode >> 16) & 0xF;
 
@@ -102,10 +129,6 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
                     res.push_str("B");
                 }
 
-                if write_back {
-                    res.push_str("T");
-                }
-
                 res.push_str(format!(" R{},", rd).as_str());
 
                 if rn == 15 {
@@ -114,16 +137,23 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
                         true => pc.wrapping_add(offset),
                     };
 
-                    res.push_str(format!("0x{:X}", val + 8).as_str());
+                    res.push_str(format!("[0x{:X}]", val + 8).as_str());
                 } else {
-                    res.push_str("???");
+                    match imm {
+                        false => res.push_str(format!("[R{},#0x{:X}]", rn, offset).as_str()),
+                        true => res.push_str("???"),
+                    }
+                }
+
+                if write_back {
+                    res.push_str("!");
                 }
 
                 (res, "COND --IP UBWL _Rn_ _Rd_ ____Offset____".to_string())
             }
         }
         0x80..=0x9F => {
-            let rlist = (opcode & 0xFFFF);
+            let rlist = opcode & 0xFFFF;
             let rn = ((opcode >> 16) & 0xF) as u8;
             let load = (opcode & 0x100000) != 0;
             let write_back = (opcode & 0x200000) != 0;
@@ -192,7 +222,31 @@ pub fn disassemble_thumb(opcode: u32) -> (String, String) {
     let high = (opcode >> 8) as u8;
 
     match high {
-        0x00..=0x17 => ("Move Shifted Register".to_string(), "???".to_string()), // Move shifted register
+        0x00..=0x17 => {
+            let rd = (opcode & 0x3) as usize;
+            let rs = ((opcode >> 3) & 0x3) as usize;
+            let offset = ((opcode >> 6) & 0x1F) as u8;
+            let op = ((opcode >> 11) & 0x3) as u8;
+
+            (
+                match op {
+                    0x0 => {
+                        format!("LSL R{},R{},#{}", rd, rs, offset)
+                    }
+                    0x1 => {
+                        format!("LSR R{},R{},#{}", rd, rs, offset)
+                    }
+                    0x2 => {
+                        format!("ASR R{},R{},#{}", rd, rs, offset)
+                    }
+                    0x3 => {
+                        format!("Move Shifted Register: Invalid OP `{}`", op)
+                    }
+                    _ => unreachable!(),
+                },
+                "---O pOffsetRs__Rd_".to_string(),
+            )
+        } // Move shifted register
         0x18..=0x1F => {
             let rd = (opcode & 0x7) as u8;
             let rs = ((opcode >> 3) & 0x7) as u8;
@@ -217,14 +271,41 @@ pub fn disassemble_thumb(opcode: u32) -> (String, String) {
             let op = ((opcode >> 11) & 0x3) as u8;
 
             match op {
-                0b00 => (format!("MOV R{},#{}", rd, offset), bits),
-                0b01 => (format!("CMP R{},#{}", rd, offset), bits),
-                0b10 => (format!("ADD R{},#{}", rd, offset), bits),
-                0b11 => (format!("SUB R{},#{}", rd, offset), bits),
+                0b00 => (format!("MOV R{},#0x{:02X}", rd, offset), bits),
+                0b01 => (format!("CMP R{},#0x{:02X}", rd, offset), bits),
+                0b10 => (format!("ADD R{},#0x{:02X}", rd, offset), bits),
+                0b11 => (format!("SUB R{},#0x{:02X}", rd, offset), bits),
                 _ => unreachable!(""),
             }
         } // Move/compare/add/subtract immediate
-        0x40..=0x43 => ("ALU operations".to_string(), "???".to_string()),        // ALU operations
+        0x40..=0x43 => {
+            let rd = (opcode & 0x7) as u8;
+            let rs = ((opcode >> 3) & 0x7) as u8;
+            let op = ((opcode >> 6) & 0xF) as u8;
+
+            (
+                match op {
+                    0x0 => format!("AND R{},R{}", rd, rs),
+                    0x1 => format!("EOR R{},R{}", rd, rs),
+                    0x2 => format!("LSL R{},R{}", rd, rs),
+                    0x3 => format!("LSR R{},R{}", rd, rs),
+                    0x4 => format!("ASR R{},R{}", rd, rs),
+                    0x5 => format!("ADC R{},R{}", rd, rs),
+                    0x6 => format!("SBC R{},R{}", rd, rs),
+                    0x7 => format!("ROR R{},R{}", rd, rs),
+                    0x8 => format!("TST R{},R{}", rd, rs),
+                    0x9 => format!("NEG R{},R{}", rd, rs),
+                    0xA => format!("CMP R{},R{}", rd, rs),
+                    0xB => format!("CMN R{},R{}", rd, rs),
+                    0xC => format!("ORR R{},R{}", rd, rs),
+                    0xD => format!("MUL R{},R{}", rd, rs),
+                    0xE => format!("BIC R{},R{}", rd, rs),
+                    0xF => format!("MVN R{},R{}", rd, rs),
+                    _ => unreachable!(),
+                },
+                "---- --Op___Rs__Rd_".to_string(),
+            ) // ALU operations
+        }
         0x44..=0x47 => {
             let rd = opcode & 0x7;
             let rs = (opcode >> 3) & 0x7;
@@ -247,7 +328,7 @@ pub fn disassemble_thumb(opcode: u32) -> (String, String) {
                     0b00 => format!("ADD R{},R{}", rd, rs),
                     0b01 => format!("CMP R{},R{}", rd, rs),
                     0b10 => format!("MOV R{},R{}", rd, rs),
-                    0b11 => format!("BX R{},R{}", rd, rs),
+                    0b11 => format!("BX R{}", rs),
                     _ => unreachable!(),
                 },
                 "---- --OP 12Rs__Rd_".to_string(),
@@ -261,14 +342,41 @@ pub fn disassemble_thumb(opcode: u32) -> (String, String) {
 
             (format!("LDR R{},[PC,#0x{:02X}]", rd, word), bits)
         }
-        0x50 | 0x51 | 0x54 | 0x55 | 0x58 | 0x59 | 0x5C | 0x5D => (
-            "Load/store with register offset".to_string(),
-            "???".to_string(),
-        ), // Load/store with register offset
-        0x52 | 0x53 | 0x56 | 0x57 | 0x5A | 0x5B | 0x5E | 0x5F => (
-            "Load/store sign-extended byte/halfword".to_string(),
-            "???".to_string(),
-        ), // Load/store sign-extended byte/halfword
+        0x50 | 0x51 | 0x54 | 0x55 | 0x58 | 0x59 | 0x5C | 0x5D => {
+            let rd = (opcode & 0x7) as u8;
+            let rb = ((opcode >> 3) & 0x7) as u8;
+            let ro = ((opcode >> 6) & 0x7) as u8;
+
+            let byte = (opcode & 0x400) != 0;
+            let load = (opcode & 0x800) != 0;
+
+            (
+                match (load, byte) {
+                    (false, false) => format!("STR R{rd},[R{rb},R{ro}]"),
+                    (false, true) => format!("STRB R{rd},[R{rb},R{ro}]"),
+                    (true, false) => format!("LDR R{rd},[R{rb},R{ro}]"),
+                    (true, true) => format!("LDRB R{rd},[R{rb},R{ro}]"),
+                },
+                "---- LB-Ro__Rb__Rd_".to_string(),
+            )
+        } // Load/store with register offset
+        0x52 | 0x53 | 0x56 | 0x57 | 0x5A | 0x5B | 0x5E | 0x5F => {
+            let rd = (opcode & 0x7) as u8;
+            let rb = ((opcode >> 3) & 0x7) as u8;
+            let ro = ((opcode >> 6) & 0x7) as u8;
+            let sign_extended = (opcode & 0x400) != 0;
+            let h_flag = (opcode & 0x800) != 0;
+
+            (
+                match (sign_extended, h_flag) {
+                    (false, false) => format!("STRH R{},[R{},R{}]", rd, rb, ro),
+                    (false, true) => format!("LDRH R{},[R{},R{}]", rd, rb, ro),
+                    (true, false) => format!("LDSB R{},[R{},R{}]", rd, rb, ro),
+                    (true, true) => format!("LDSH R{},[R{},R{}]", rd, rb, ro),
+                },
+                "---- HS-Ro__Rb__Rd_".to_string(),
+            )
+        } // Load/store sign-extended byte/halfword
         0x60..=0x7F => {
             let rd = (opcode & 0x7) as u8;
             let rb = ((opcode >> 3) & 0x7) as u8;
@@ -311,13 +419,104 @@ pub fn disassemble_thumb(opcode: u32) -> (String, String) {
                 bits,
             ) // Load/store halfword
         }
-        0x90..=0x9F => ("SP-relative load/store".to_string(), "???".to_string()), // SP-relative load/store
-        0xA0..=0xAF => ("Load address".to_string(), "???".to_string()),           // Load address
-        0xB0 => ("Add offset to stack pointer".to_string(), "???".to_string()), // Add offset to stack pointer
-        0xB4 | 0xB5 => ("PUSH ???".to_string(), "---- L--R __RLIST__".to_string()), // Push/pop registers
+        0x90..=0x9F => {
+            let imm = (opcode & 0xFF) << 2;
+            let rd = ((opcode >> 8) & 0x7) as u8;
+            let load = (opcode & 0x800) != 0;
+
+            (
+                match load {
+                    false => format!("STR R{},[SP,#0x{:X}]", rd, imm),
+                    true => format!("LDR R{},[SP,#0x{:X}]", rd, imm),
+                },
+                "---- LRd_ Offset__".to_string(),
+            )
+        } // SP-relative load/store
+        0xA0..=0xAF => {
+            let imm = (opcode & 0xFF) << 2;
+            let rd = (opcode >> 8) & 0x7;
+            let sp = (opcode & 0x0800) != 0;
+
+            (
+                match sp {
+                    false => format!("ADD R{},PC,#0x{:X}", rd, imm),
+                    true => format!("ADD R{},SP,#0x{:X}", rd, imm),
+                },
+                "---- SRd_ Immediate".to_string(),
+            )
+        } // Load address
+        0xB0 => {
+            let imm = ((opcode & 0x7F) << 2) as u32;
+            let neg = (opcode & 0x80) != 0;
+            (
+                match neg {
+                    false => format!("ADD SP,#0x{:X}", imm),
+                    true => format!("SUB SP,#0x{:X}", imm),
+                },
+                "---- ---- SOffset__".to_string(),
+            )
+        } // Add offset to stack pointer
+        0xB4 | 0xB5 => {
+            let store_lr = (opcode & 0x0100) != 0;
+            let rlist = (opcode & 0xFF) as u8;
+
+            let mut res = String::from("PUSH ");
+
+            rlist_to_string(rlist, &mut res);
+
+            if store_lr {
+                res.push_str(",LR}");
+            } else {
+                res.push_str("}");
+            }
+
+            (res, "---- L--R __RLIST__".to_string())
+        } // Push/pop registers
         0xBC | 0xBD => ("POP ???".to_string(), "---- L--R __RLIST__".to_string()), // Push/pop registers
-        0xC0..=0xCF => ("Multiple load/store".to_string(), "???".to_string()), // Multiple load/store
-        0xD0..=0xDE => ("Conditional branch".to_string(), "???".to_string()),  // Conditional branch
+        0xC0..=0xCF => {
+            let rlist = (opcode & 0xFF) as u8;
+            let rb = ((opcode >> 8) & 0x7) as u8;
+            let load = (opcode & 0x0800) != 0;
+
+            let mut rlist_str = String::new();
+            rlist_to_string(rlist, &mut rlist_str);
+            rlist_str.push_str("}");
+
+            (
+                match load {
+                    false => format!("STMIA R{}!,{}", rb, rlist_str),
+                    true => format!("LDMIA R{}!,{}", rb, rlist_str),
+                },
+                "---- LRb_ Rlist____".to_string(),
+            )
+        } // Multiple load/store
+        0xD0..=0xDE => {
+            let offset = ((opcode & 0xFF) << 1) as u32;
+            let cond = (opcode >> 8) & 0xF;
+
+            let str = match cond {
+                0x0 => "BEQ",
+                0x1 => "BNE",
+                0x2 => "BCS",
+                0x3 => "BCC",
+                0x4 => "BMI",
+                0x5 => "BPL",
+                0x6 => "BVS",
+                0x7 => "BVC",
+                0x8 => "BHI",
+                0x9 => "BLS",
+                0xA => "BGE",
+                0xB => "BLT",
+                0xC => "BGT",
+                0xD => "BLE",
+                _ => "B???",
+            };
+
+            (
+                format!("{} #{}", str, offset),
+                "---- COND Immediate".to_string(),
+            )
+        } // Conditional branch
         0xDF => (
             format!("SWI {:2X}", opcode & 0xFF),
             "---- ---- __Value8__".to_string(),
