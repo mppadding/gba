@@ -1,7 +1,6 @@
 use log::*;
 
 use crate::{keypad::Keypad, lcd::LCD, serial::Serial};
-use crate::{keypad::Keypad, lcd::LCD};
 
 const ROM_WRITING: bool = false;
 
@@ -101,7 +100,11 @@ impl MMU for CPU {
                     0x135 => ((self.serial.rcnt >> 8) & 0xFF) as u8,
                     _ => {
                         if intern {
-                            panic!("Read8 from unimplemented IO register `{:08X}`", addr)
+                            panic!(
+                                "Read8 from unimplemented IO register `{:08X}` (PC={:08X})",
+                                addr,
+                                self.get_program_counter()
+                            )
                         }
                         0
                     }
@@ -348,6 +351,7 @@ impl MMU for CPU {
                         let offset = (io_addr - 0xB0) as usize;
                         self.dma[offset] = val;
                     }
+                    0x208 => self.io_ime = val,
                     _ => {
                         if intern {
                             panic!(
@@ -429,6 +433,11 @@ impl MMU for CPU {
 
                 match io_addr {
                     0x00..=0x54 => {
+                        info!(
+                            "Write to LCD register `{:X}` at PC={:08X}",
+                            offset,
+                            self.get_program_counter()
+                        );
                         self.lcd.registers[offset + 3] = ((val >> 24) & 0xFF) as u8;
                         self.lcd.registers[offset + 2] = ((val >> 16) & 0xFF) as u8;
                         self.lcd.registers[offset + 1] = ((val >> 8) & 0xFF) as u8;
@@ -736,6 +745,9 @@ impl CPU {
         // Clear panic flag
         self.panic = false;
         self.halt = false;
+
+        // Clear cycle counter
+        self.cycle_count = 0;
     }
 
     pub fn trigger_irq(&mut self, irq: u16) {
@@ -1100,7 +1112,7 @@ impl CPU {
         let rd_val = self.read_register(1);
         let len_mode = self.read_register(2);
 
-        let count = (len_mode & 0x1FFFFF);
+        let count = len_mode & 0x1FFFFF;
         let fill = (len_mode & 0x01000000) != 0;
         let word = (len_mode & 0x04000000) != 0;
 
@@ -1229,6 +1241,7 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+        self.cycle_count += 1 + 1;
     }
 
     /// Format2
@@ -1278,6 +1291,9 @@ impl CPU {
         self.set_flag_v(v);
 
         self.step_program_counter(2);
+
+        // ALU + reg offset, but no shift (immediate of 0)
+        self.cycle_count += 1;
     }
 
     /// Format3
@@ -1329,6 +1345,7 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+        self.cycle_count += 1;
     }
 
     /// Format4
@@ -1387,6 +1404,10 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+        self.cycle_count += match rd == 15 {
+            false => 1,
+            true => 1 + 2,
+        };
     }
 
     /// Format5
@@ -1498,6 +1519,7 @@ impl CPU {
         self.write_register(rd, val);
 
         self.step_program_counter(2);
+        self.cycle_count += 3;
     }
 
     /// Format7
@@ -1533,6 +1555,12 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+
+        self.cycle_count += match (load, rd == 15) {
+            (false, _) => 2,
+            (true, false) => 3,
+            (true, true) => 3 + 2,
+        };
     }
 
     /// Thumb Format8
@@ -1593,6 +1621,11 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+        self.cycle_count += match (sign_extended, h_flag, rd == 15) {
+            (false, false, _) => 2, // STRH
+            (_, _, false) => 3,     // LDR/LSB/LDSH, Rd != 15
+            (_, _, true) => 3 + 2,  // LDR/LSB/LDSH, Rd == 15
+        };
     }
 
     /// Format9
@@ -1652,6 +1685,12 @@ impl CPU {
         }
 
         self.step_program_counter(2);
+
+        self.cycle_count += match (load, rd == 15) {
+            (false, _) => 2,
+            (true, false) => 3,
+            (true, true) => 3 + 2,
+        };
     }
 
     /// Format11
@@ -1699,6 +1738,7 @@ impl CPU {
         self.write_register(rd, val);
 
         self.step_program_counter(2);
+        self.cycle_count += 1;
     }
 
     /// Format13
@@ -1727,6 +1767,7 @@ impl CPU {
 
         self.write_register(13, res);
         self.step_program_counter(2);
+        self.cycle_count += 1;
     }
 
     /// Format14
@@ -2212,6 +2253,7 @@ impl CPU {
                 }
             } else {
                 let shift = self.read_register(((opcode >> 7) & 0xF) as u8);
+                self.cycle_count += 1;
                 if rm == 15 {
                     (shift, rm_value + 12)
                 } else {
@@ -2397,6 +2439,10 @@ impl CPU {
         }
 
         self.step_program_counter(4);
+        self.cycle_count += match rd == 15 {
+            false => 1,
+            true => 1 + 2,
+        };
     }
 
     fn arm_shifted_offset(&self) {
