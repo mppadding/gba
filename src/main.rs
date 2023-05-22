@@ -28,21 +28,7 @@ use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
 
 fn main() {
-    init_logger(log::LevelFilter::Trace).unwrap();
-    tui_logger::set_default_level(log::LevelFilter::Trace);
 
-    enable_raw_mode().expect("[TERM] Failed to enable raw mode");
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .expect("[TERM] Failed to enter alternate screen & enable mouse capture");
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).expect("[TERM] Failed to create terminal");
-
-    let mut dbg = Debugger::default();
-    dbg.breakpoints = HashSet::from([
-        0x00000000, 0x13c, 0x080002e0,
-        //0x080016BC
-    ]);
 
     let mut cpu = CPU::new();
     cpu.reset();
@@ -57,13 +43,14 @@ fn main() {
     let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
     cpu.load_rom(&rom.clone());
 
-    if !dbg.breakpoints.is_empty() {
-        dbg.free_run = true;
-        dbg.paused = false;
-    } else {
-        dbg.free_run = false;
-        dbg.paused = true;
-    }
+    let mut dbg = Debugger::new();
+    Debugger::set_panic_hook();
+    dbg.breakpoints = HashSet::from([
+        //0x00000000, 0x13c, 0x080002e0,
+        //0x080016BC
+        // 0x03000188,
+        //0x08000492,
+    ]);
 
     let sdl_context = sdl2::init().expect("[SDL] Failed to create context");
     let video_subsystem = sdl_context
@@ -95,12 +82,8 @@ fn main() {
     let mut event_pump = sdl_context
         .event_pump()
         .expect("[SDL] Failed to get event pump");
-    terminal
-        .draw(|f| debugger::draw(f, &dbg, &mut cpu))
-        .expect("[TERM] Failed to draw to terminal");
 
     let mut prev = Instant::now();
-    let mut start = Instant::now();
     let mut frame_timer = Duration::from_micros(0);
 
     //cpu.io_ime = 0;
@@ -108,6 +91,10 @@ fn main() {
     //cpu.io_bios_if = cpu::IRQ_GAMEPAK;
 
     //cpu.halt = true;
+    dbg.draw(&cpu);
+
+    let start = Instant::now();
+
     //dbg.free_run = false;
     //dbg.paused = true;
     //dbg.lockstep = true;
@@ -116,6 +103,7 @@ fn main() {
         let now = Instant::now();
         let dt = now.duration_since(prev);
 
+    'running: loop {
         let program_counter = cpu.get_program_counter();
         let opcode: u32 = if !cpu.addr_valid(program_counter) {
             if !cpu.panic {
@@ -149,9 +137,7 @@ fn main() {
         }
 
         if cpu.panic || dbg.lockstep || !dbg.free_run {
-            terminal
-                .draw(|f| debugger::draw(f, &dbg, &mut cpu))
-                .expect("[TERM] Failed to draw to terminal");
+            dbg.draw(&mut cpu);
         }
 
         for event in event_pump.poll_iter() {
@@ -352,45 +338,7 @@ fn main() {
 
     let end = Instant::now();
 
-    disable_raw_mode().expect("[TERM] Failed to disable raw mode");
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )
-    .expect("[TERM] Failed to leave alternate screen & disable mouse capture");
-    terminal
-        .show_cursor()
-        .expect("[TERM] Failed to show cursor");
-    println!(
-        "{} IPS",
-        (dbg.instruction_counter as f64) / (end.duration_since(start).as_secs_f64())
-    );
+    dbg.exit();
+    let cps = (cpu.cycle_count as f64) / (end.duration_since(start).as_secs_f64());
+    println!("{cps:.0} CPS, {:.3} MHz", cps / 1000000.0);
 }
-
-//fn main() -> Result<(), io::Error> {
-//    let mut running = true;
-//
-//    while running {
-//
-//        // Keymap:
-//        // GBA => Keyboard
-//        // Shoulder Left => A
-//        // Shoulder Right => S
-//        // Up => Up
-//        // Left => Left
-//        // Right => Right
-//        // Down => Down
-//        //
-//        // B => Z
-//        // A => X
-//        //
-//        // Start => Enter
-//        // Select => Backspace
-//
-//
-//        if cpu.panic || dbg.paused {
-//            thread::sleep(Duration::from_millis(16));
-//        }
-//    }
-//}

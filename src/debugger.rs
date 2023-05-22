@@ -1,13 +1,25 @@
-use std::collections::HashSet;
+use std::{
+    backtrace::Backtrace,
+    collections::HashSet,
+    io::{self, Stdout},
+    panic,
+    time::Duration,
+};
 
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use log::warn;
 use ratatui::{
-    backend::Backend,
+    backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Paragraph},
-    Frame,
+    Frame, Terminal,
 };
-use tui_logger::{TuiLoggerSmartWidget, TuiWidgetState};
+use tui_logger::{init_logger, TuiLoggerSmartWidget, TuiWidgetState};
 
 use crate::{
     cpu::{CPU, MMU},
@@ -21,6 +33,13 @@ pub enum ViewState {
 }
 
 #[derive(PartialEq, Eq)]
+pub enum DebuggerEvent {
+    None,
+    Quit,
+    Reset,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum InputMode {
     GAME,
     DEBUGGER,
@@ -35,10 +54,20 @@ pub struct Debugger {
     pub paused: bool,
     pub input_mode: InputMode,
     pub lockstep: bool,
+    pub terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
-impl Default for Debugger {
-    fn default() -> Self {
+impl Debugger {
+    pub fn new() -> Self {
+        init_logger(log::LevelFilter::Trace).unwrap();
+        tui_logger::set_default_level(log::LevelFilter::Trace);
+
+        enable_raw_mode().expect("[TERM] Failed to enable raw mode");
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+            .expect("[TERM] Failed to enter alternate screen & enable mouse capture");
+        let backend = CrosstermBackend::new(stdout);
+
         Self {
             opcode: 0,
             breakpoints: HashSet::default(),
@@ -48,7 +77,184 @@ impl Default for Debugger {
             paused: true,
             input_mode: InputMode::DEBUGGER,
             lockstep: false,
+            terminal: Terminal::new(backend).expect("[TERM] Failed to create terminal"),
         }
+    }
+
+    pub fn draw(&mut self, cpu: &CPU) {
+        self.terminal
+            .draw(|f| {
+                let constraints = match self.state {
+                    ViewState::RAM => [
+                        Constraint::Percentage(14),
+                        Constraint::Percentage(48),
+                        Constraint::Percentage(100 - 48 - 14),
+                    ],
+                    ViewState::IO => [
+                        Constraint::Percentage(14),
+                        Constraint::Percentage(50),
+                        Constraint::Percentage(100 - 54 - 14),
+                    ],
+                    ViewState::LOG => [
+                        Constraint::Percentage(14),
+                        Constraint::Percentage(0),
+                        Constraint::Percentage(100 - 14),
+                    ],
+                };
+
+                let verts = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(0)
+                    .constraints(constraints)
+                    .split(f.size());
+
+                let hors1 = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(0)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(verts[0]);
+
+                let block = Block::default().title("Opcode").borders(Borders::ALL);
+                let opcode_text = match cpu.is_thumb() {
+                    false => format_opcode_arm(self.opcode, cpu),
+                    true => format_opcode_thumb(self.opcode as u16, cpu),
+                };
+                let text = Paragraph::new(opcode_text).block(block);
+                f.render_widget(text, hors1[0]);
+
+                let block = Block::default()
+                    .title("Debugger State")
+                    .borders(Borders::ALL);
+                let text = Paragraph::new(format_debugger_state(
+                    self.instruction_counter,
+                    self.free_run,
+                    self.lockstep,
+                    self.input_mode,
+                    cpu,
+                ))
+                .block(block);
+                f.render_widget(text, hors1[1]);
+
+                match self.state {
+                    ViewState::RAM => draw_view_ram(f, cpu, verts[1]),
+                    ViewState::IO => draw_view_io(f, cpu, verts[1]),
+                    ViewState::LOG => {}
+                }
+
+                let mut tws =
+                    TuiWidgetState::new().set_default_display_level(log::LevelFilter::Debug);
+
+                let tui_sm = TuiLoggerSmartWidget::default()
+                    .style_error(Style::default().fg(Color::Red))
+                    .style_debug(Style::default().fg(Color::Green))
+                    .style_warn(Style::default().fg(Color::Yellow))
+                    .style_trace(Style::default().fg(Color::Magenta))
+                    .style_info(Style::default().fg(Color::Cyan))
+                    .output_target(true)
+                    .output_separator(' ')
+                    .state(&mut tws);
+                f.render_widget(tui_sm, verts[2]);
+            })
+            .expect("[TERM] Failed to draw to terminal");
+    }
+
+    pub fn exit(&mut self) {
+        disable_raw_mode().expect("[TERM] Failed to disable raw mode");
+        execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )
+        .expect("[TERM] Failed to leave alternate screen & disable mouse capture");
+        self.terminal
+            .show_cursor()
+            .expect("[TERM] Failed to show cursor");
+    }
+
+    pub fn update(&mut self, cpu: &mut CPU) -> DebuggerEvent {
+        while event::poll(Duration::from_secs(0)).unwrap_or(false) {
+            if let Event::Key(key) = event::read().unwrap() {
+                if key.code == KeyCode::F(1) {
+                    self.input_mode = match self.input_mode {
+                        InputMode::GAME => InputMode::DEBUGGER,
+                        InputMode::DEBUGGER => InputMode::GAME,
+                    };
+                } else {
+                    if self.input_mode == InputMode::DEBUGGER {
+                        match key.code {
+                            KeyCode::Char('q') => return DebuggerEvent::Quit,
+                            KeyCode::Enter => {
+                                if cpu.panic {
+                                    warn!(
+                                    "CPU in panic mode, cannot step. Reset using `r` (stuck at `{}`)",
+                                    self.instruction_counter
+                                );
+                                }
+
+                                self.paused = false
+                            }
+                            KeyCode::Char('p') => {
+                                self.state = match self.state {
+                                    ViewState::RAM => ViewState::IO,
+                                    ViewState::IO => ViewState::LOG,
+                                    ViewState::LOG => ViewState::RAM,
+                                };
+                            }
+                            KeyCode::Char('h') => self.free_run = !self.free_run,
+                            KeyCode::Char('l') => self.lockstep = !self.lockstep,
+                            KeyCode::F(2) => {
+                                self.free_run = true;
+                                self.input_mode = InputMode::GAME;
+                            }
+                            KeyCode::Char('r') => {
+                                self.reset();
+                                return DebuggerEvent::Reset;
+                            }
+                            KeyCode::Char('i') => {
+                                self.lockstep = true;
+                                self.paused = true;
+                                self.free_run = false;
+                                let can_trigger = cpu.can_irq_trigger(cpu::IRQ_DEBUG1);
+                                warn!("DEBUG1 IRQ Triggered => {can_trigger}");
+
+                                if can_trigger {
+                                    cpu.trigger_irq(cpu::IRQ_DEBUG1);
+                                }
+                            }
+                            _ => {
+                                warn!("Key: {:?}", key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        DebuggerEvent::None
+    }
+
+    pub fn set_panic_hook() {
+        panic::set_hook(Box::new(|panic_info| {
+            let bt = Backtrace::capture();
+            enable_raw_mode().expect("[TERM] Failed to enable raw mode");
+            let stdout = io::stdout();
+            let backend = CrosstermBackend::new(stdout);
+            let mut terminal = Terminal::new(backend).expect("[TERM] Failed to create terminal");
+
+            disable_raw_mode().expect("[TERM] Failed to disable raw mode");
+            execute!(
+                terminal.backend_mut(),
+                LeaveAlternateScreen,
+                DisableMouseCapture
+            )
+            .expect("[TERM] Failed to leave alternate screen & disable mouse capture");
+            terminal
+                .show_cursor()
+                .expect("[TERM] Failed to show cursor");
+
+            println!("{panic_info}");
+            println!("Backtrace:\n{bt}");
+        }));
     }
 }
 
@@ -196,49 +402,55 @@ fn format_memory(cpu: &mut CPU) -> String {
     fmt
 }
 
-fn format_opcode_thumb(dbg: &Debugger, cpu: &CPU) -> String {
+fn format_opcode_thumb(opcode: u16, cpu: &CPU) -> String {
     let mut fmt = String::new();
 
-    fmt.push_str(format!("op: {:04X}h\n    ", dbg.opcode).as_str());
+    fmt.push_str(format!("op: {:04X}h\n    ", opcode).as_str());
 
     for i in 0..4 {
-        fmt.push_str(format!("{:04b} ", (dbg.opcode >> (12 - (4 * i))) & 0xF).as_str());
+        fmt.push_str(format!("{:04b} ", (opcode >> (12 - (4 * i))) & 0xF).as_str());
     }
 
-    let (mnemonic, args) = disassembler::disassemble_thumb(dbg.opcode);
+    let (mnemonic, args) = disassembler::disassemble_thumb(opcode);
     fmt.push_str(format!("\n    {}\n    {}\n", args, mnemonic).as_str());
 
     fmt
 }
 
-fn format_opcode_arm(dbg: &Debugger, cpu: &CPU) -> String {
+fn format_opcode_arm(opcode: u32, cpu: &CPU) -> String {
     let mut fmt = String::new();
 
-    fmt.push_str(format!("op: {:08X}h\n    ", dbg.opcode).as_str());
+    fmt.push_str(format!("op: {:08X}h\n    ", opcode).as_str());
 
     for i in 0..8 {
-        fmt.push_str(format!("{:04b} ", (dbg.opcode >> (28 - (4 * i))) & 0xF).as_str());
+        fmt.push_str(format!("{:04b} ", (opcode >> (28 - (4 * i))) & 0xF).as_str());
     }
 
-    let (mnemonic, args) = disassembler::disassemble_arm(dbg.opcode, cpu.get_program_counter());
+    let (mnemonic, args) = disassembler::disassemble_arm(opcode, cpu.get_program_counter());
     fmt.push_str(format!("\n    {}\n    {}\n", args, mnemonic).as_str());
 
     fmt
 }
 
-fn format_debugger_state(dbg: &Debugger, cpu: &CPU) -> String {
+fn format_debugger_state(
+    instruction_counter: usize,
+    free_run: bool,
+    lockstep: bool,
+    input_mode: InputMode,
+    cpu: &CPU,
+) -> String {
     let mut fmt = String::new();
 
     fmt.push_str(
         format!(
             "Instr Counter: {:8}    Cycle Count: {:8}\n",
-            dbg.instruction_counter, cpu.cycle_count
+            instruction_counter, cpu.cycle_count
         )
         .as_str(),
     );
-    fmt.push_str(format!("     Free run: {}\t\t\n", dbg.free_run).as_str());
-    fmt.push_str(format!("    Lock Step: {}\t\t\n", dbg.lockstep).as_str());
-    match dbg.input_mode {
+    fmt.push_str(format!("     Free run: {}\t\t\n", free_run).as_str());
+    fmt.push_str(format!("    Lock Step: {}\t\t\n", lockstep).as_str());
+    match input_mode {
         InputMode::GAME => fmt.push_str("   Input Mode: Game\n"),
         InputMode::DEBUGGER => fmt.push_str("   Input Mode: Debugger\n"),
     }
@@ -380,7 +592,7 @@ fn format_serial(cpu: &mut CPU) -> String {
     fmt
 }
 
-fn draw_view_ram<B: Backend>(f: &mut Frame<B>, debugger: &Debugger, cpu: &mut CPU, area: Rect) {
+fn draw_view_ram<B: Backend>(f: &mut Frame<B>, cpu: &mut CPU, area: Rect) {
     let hors = Layout::default()
         .direction(Direction::Horizontal)
         .margin(0)
@@ -414,7 +626,7 @@ fn draw_view_ram<B: Backend>(f: &mut Frame<B>, debugger: &Debugger, cpu: &mut CP
     f.render_widget(text, hors[3]);
 }
 
-fn draw_view_io<B: Backend>(f: &mut Frame<B>, debugger: &Debugger, cpu: &mut CPU, area: Rect) {
+fn draw_view_io<B: Backend>(f: &mut Frame<B>, cpu: &mut CPU, area: Rect) {
     let hors = Layout::default()
         .direction(Direction::Horizontal)
         .margin(0)
@@ -451,69 +663,4 @@ fn draw_view_io<B: Backend>(f: &mut Frame<B>, debugger: &Debugger, cpu: &mut CPU
     let block = Block::default().title("LCD").borders(Borders::ALL);
     let text = Paragraph::new(format_lcd(cpu)).block(block);
     f.render_widget(text, hors[4]);
-}
-
-pub fn draw<B: Backend>(f: &mut Frame<B>, debugger: &Debugger, cpu: &mut CPU) {
-    let constraints = match debugger.state {
-        ViewState::RAM => [
-            Constraint::Percentage(14),
-            Constraint::Percentage(48),
-            Constraint::Percentage(100 - 48 - 14),
-        ],
-        ViewState::IO => [
-            Constraint::Percentage(14),
-            Constraint::Percentage(50),
-            Constraint::Percentage(100 - 54 - 14),
-        ],
-        ViewState::LOG => [
-            Constraint::Percentage(14),
-            Constraint::Percentage(0),
-            Constraint::Percentage(100 - 14),
-        ],
-    };
-
-    let verts = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(0)
-        .constraints(constraints)
-        .split(f.size());
-
-    let hors1 = Layout::default()
-        .direction(Direction::Horizontal)
-        .margin(0)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-        .split(verts[0]);
-
-    let block = Block::default().title("Opcode").borders(Borders::ALL);
-    let opcode_text = match cpu.is_thumb() {
-        false => format_opcode_arm(debugger, cpu),
-        true => format_opcode_thumb(debugger, cpu),
-    };
-    let text = Paragraph::new(opcode_text).block(block);
-    f.render_widget(text, hors1[0]);
-
-    let block = Block::default()
-        .title("Debugger State")
-        .borders(Borders::ALL);
-    let text = Paragraph::new(format_debugger_state(debugger, cpu)).block(block);
-    f.render_widget(text, hors1[1]);
-
-    match debugger.state {
-        ViewState::RAM => draw_view_ram(f, debugger, cpu, verts[1]),
-        ViewState::IO => draw_view_io(f, debugger, cpu, verts[1]),
-        ViewState::LOG => {}
-    }
-
-    let mut tws = TuiWidgetState::new().set_default_display_level(log::LevelFilter::Debug);
-
-    let tui_sm = TuiLoggerSmartWidget::default()
-        .style_error(Style::default().fg(Color::Red))
-        .style_debug(Style::default().fg(Color::Green))
-        .style_warn(Style::default().fg(Color::Yellow))
-        .style_trace(Style::default().fg(Color::Magenta))
-        .style_info(Style::default().fg(Color::Cyan))
-        .output_target(true)
-        .output_separator(' ')
-        .state(&mut tws);
-    f.render_widget(tui_sm, verts[2]);
 }
