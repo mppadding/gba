@@ -54,9 +54,36 @@ pub struct Debugger {
     pub paused: bool,
     pub input_mode: InputMode,
     pub lockstep: bool,
+
+    #[cfg(feature = "debugger")]
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
+#[cfg(not(feature = "debugger"))]
+impl Debugger {
+    pub fn new() -> Self {
+        Self {
+            opcode: 0,
+            breakpoints: HashSet::default(),
+            state: ViewState::RAM,
+            instruction_counter: 0,
+            free_run: true,
+            paused: false,
+            input_mode: InputMode::DEBUGGER,
+            lockstep: false,
+        }
+    }
+
+    pub fn draw(&mut self, _cpu: &CPU) {}
+    pub fn update(&mut self, _cpu: &CPU) -> DebuggerEvent {
+        DebuggerEvent::None
+    }
+    pub fn exit(&mut self) {}
+
+    pub fn set_panic_hook() {}
+}
+
+#[cfg(feature = "debugger")]
 impl Debugger {
     pub fn new() -> Self {
         init_logger(log::LevelFilter::Trace).unwrap();

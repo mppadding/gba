@@ -1,19 +1,12 @@
+use std::collections::HashSet;
 use std::time::Instant;
-use std::{collections::HashSet, io, time::Duration};
 
 use cpu::MMU;
-use crossterm::event::Event as TermEvent;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use debugger::{Debugger, InputMode, ViewState};
+use debugger::Debugger;
 use log::warn;
-use ratatui::{backend::CrosstermBackend, Terminal};
-use tui_logger::init_logger;
 
 use crate::cpu::CPU;
+use crate::debugger::DebuggerEvent;
 
 mod cpu;
 mod debugger;

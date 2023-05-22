@@ -14,3 +14,6 @@ tui-logger = { version = "0.9.1", features = ["ratatui-support"], default-featur
 
 [profile.release]
 debug = 1
+
+[features]
+debugger = []
