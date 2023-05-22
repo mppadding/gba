@@ -1,5 +1,6 @@
 use log::*;
 
+use crate::{keypad::Keypad, lcd::LCD, serial::Serial};
 use crate::{keypad::Keypad, lcd::LCD};
 
 const ROM_WRITING: bool = false;
@@ -12,21 +13,6 @@ pub trait MMU {
     //fn write_u16(&mut self, intern: bool, addr: u32, val: u16);
     fn write_u32(&mut self, intern: bool, addr: u32, val: u32);
     fn addr_valid(&self, addr: u32) -> bool;
-}
-
-#[derive(Default)]
-pub struct Serial {
-    pub siodata32: u32,
-    pub siomulti: [u8; 2 * 4],
-    pub siocnt: u16,
-    pub siomlt_send: u16,
-    pub siodata8: u16,
-    pub rcnt: u16,
-
-    pub joycnt: u16,
-    pub joy_recv: u32,
-    pub joy_trans: u32,
-    pub joystat: u16,
 }
 
 pub struct CPU {
@@ -666,7 +652,7 @@ impl CPU {
             io_if: 0,
             keypad: Keypad::new(),
             lcd: LCD::new(),
-            serial: Serial::default(),
+            serial: Serial::new(),
             halt: false,
             io_bios_if: 0,
             cycle_count: 0,

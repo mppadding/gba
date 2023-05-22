@@ -354,20 +354,20 @@ fn format_lcd(cpu: &mut CPU) -> String {
 fn format_serial(cpu: &mut CPU) -> String {
     let mut fmt = String::new();
 
-    fmt.push_str(format!("  SIODATA32│ {:08X}h\n", cpu.serial.siodata32).as_str());
-    fmt.push_str(format!("  SIOMULTI0│     ????h\n").as_str());
-    fmt.push_str(format!("  SIOMULTI1│     ????h\n").as_str());
-    fmt.push_str(format!("  SIOMULTI2│     ????h\n").as_str());
-    fmt.push_str(format!("  SIOMULTI3│     ????h\n").as_str());
-    fmt.push_str(format!("     SIOCNT│     {:04X}h\n", cpu.serial.siocnt).as_str());
-    fmt.push_str(format!("SIOMLT_SEND│     {:04X}h\n", cpu.serial.siomlt_send).as_str());
-    fmt.push_str(format!("   SIODATA8│     {:04X}h\n", cpu.serial.siodata8).as_str());
+    fmt.push_str(format!("  SIODATA32│ {:08X}h\n", cpu.serial.read_u32(0x120)).as_str());
+    fmt.push_str(format!("  SIOMULTI0│     {:04X}h\n", cpu.serial.read_u16(0x120)).as_str());
+    fmt.push_str(format!("  SIOMULTI1│     {:04X}h\n", cpu.serial.read_u16(0x122)).as_str());
+    fmt.push_str(format!("  SIOMULTI2│     {:04X}h\n", cpu.serial.read_u16(0x124)).as_str());
+    fmt.push_str(format!("  SIOMULTI3│     {:04X}h\n", cpu.serial.read_u16(0x126)).as_str());
+    fmt.push_str(format!("     SIOCNT│     {:04X}h\n", cpu.serial.read_u16(0x128)).as_str());
+    fmt.push_str(format!("SIOMLT_SEND│     {:04X}h\n", cpu.serial.read_u16(0x12A)).as_str());
+    fmt.push_str(format!("   SIODATA8│     {:04X}h\n", cpu.serial.read_u16(0x12A)).as_str());
     fmt.push_str(format!("           │\n").as_str());
     fmt.push_str(format!("       RCNT│     {:04X}h\n", cpu.serial.rcnt).as_str());
-    fmt.push_str(format!("     JOYCNT│     {:04X}h\n", cpu.serial.joycnt).as_str());
-    fmt.push_str(format!("   JOY_RECV│ ????????h\n").as_str());
-    fmt.push_str(format!("  JOY_TRANS│ ????????h\n").as_str());
-    fmt.push_str(format!("    JOYSTAT│     {:04X}h\n", cpu.serial.joystat).as_str());
+    fmt.push_str(format!("     JOYCNT│     {:04X}h\n", cpu.serial.joy_cnt).as_str());
+    fmt.push_str(format!("   JOY_RECV│ {:08X}h\n", cpu.serial.joy_recv).as_str());
+    fmt.push_str(format!("  JOY_TRANS│ {:08X}h\n", cpu.serial.joy_trans).as_str());
+    fmt.push_str(format!("    JOYSTAT│     {:04X}h\n", cpu.serial.joy_stat).as_str());
     fmt.push_str(format!("           │\n").as_str());
     fmt.push_str(format!("           │\n").as_str());
     fmt.push_str(format!("           │\n").as_str());
