@@ -92,9 +92,8 @@ fn main() {
     //dbg.paused = true;
     //dbg.lockstep = true;
 
-    'running: loop {
-        let now = Instant::now();
-        let dt = now.duration_since(prev);
+    let mut timer_scanline: usize = 0;
+    let mut dt_cycles: usize = 0;
 
     'running: loop {
         let program_counter = cpu.get_program_counter();
@@ -256,10 +255,13 @@ fn main() {
             }
 
             if !cpu.halt || (cpu.halt && cpu.get_mode() == cpu::MODE_IRQ) {
+                let cycles = cpu.cycle_count;
                 cpu.execute(opcode);
 
+                dt_cycles = cpu.cycle_count - cycles;
                 dbg.instruction_counter += 1;
             } else {
+                cpu.cycle_count += 1;
                 warn!("CPU Halted");
             }
 
@@ -275,58 +277,40 @@ fn main() {
         // VBlank => 68*scanline => 83776
         // refresh => Vdraw+VBlank => 280896
 
-        frame_timer += dt;
+        timer_scanline += dt_cycles;
 
-        if frame_timer >= Duration::from_nanos(lcd::TIME_NS_SCANLINE) {
+        if timer_scanline >= 1232 {
+            timer_scanline -= 1232;
             let vcount = cpu.lcd.increment_vcount();
 
-            match vcount {
-                0..=160 => cpu
-                    .lcd
-                    .set_dispstat(cpu.lcd.get_dispstat() | lcd::DISPSTATE_VBLANK),
-                161..=227 => {
-                    cpu.lcd
-                        .set_dispstat(cpu.lcd.get_dispstat() & !(lcd::DISPSTATE_VBLANK));
+            if vcount == 0 {
+            } else if vcount == 160 {
+                if cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
+                    //dbg.lockstep = true;
+                    //dbg.paused = true;
+                    //dbg.free_run = false;
+                    warn!("VBLANK IRQ Triggered");
 
-                    //if cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
-                    //    dbg.lockstep = true;
-                    //    dbg.paused = true;
-                    //    dbg.free_run = false;
-                    //    warn!("IRQ Tiggered");
-
-                    //    cpu.trigger_irq(cpu::IRQ_VBLANK);
-                    //}
-                }
-                _ => {
-                    cpu.lcd.set_vcount(0);
-
-                    canvas.clear();
-                    renderer::draw_texture(&mut cpu, &mut texture);
-                    canvas
-                        .copy(&texture, None, None)
-                        .expect("[SDL] Cannot copy texture");
-                    canvas.present();
+                    cpu.trigger_irq(cpu::IRQ_VBLANK);
                 }
             }
-
-            // Scanline
-            frame_timer -= Duration::from_nanos(lcd::TIME_NS_SCANLINE);
         }
 
-        //if frame_timer >= Duration::from_micros(16742) {
-        //    //canvas.clear();
-        //    //renderer::draw_texture(&mut cpu, &mut texture);
-        //    //canvas
-        //    //    .copy(&texture, None, None)
-        //    //    .expect("[SDL] Cannot copy texture");
-        //    //canvas.present();
+        //  Although the drawing time is only 960 cycles (240*4),
+        //  the H-Blank flag is "0" for a total of 1006 cycles. (GBATEK)
+        if timer_scanline <= 1006 {
+            cpu.lcd.set_dispstat_hblank(false); // Hdraw
+        } else {
+            cpu.lcd.set_dispstat_hblank(true); // Hblank
+            if cpu.can_irq_trigger(cpu::IRQ_HBLANK) {
+                //dbg.lockstep = true;
+                //dbg.paused = true;
+                //dbg.free_run = false;
+                warn!("HBlank IRQ Triggered");
 
-        //    // Reset frame_timer
-        //    frame_timer -= Duration::from_micros(16742);
-        //}
-        //::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 360));
-        // The rest of the game loop goes here...
-        prev = now;
+                cpu.trigger_irq(cpu::IRQ_HBLANK);
+            }
+        }
     }
 
     let end = Instant::now();
