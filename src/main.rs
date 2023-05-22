@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 use cpu::MMU;
@@ -7,33 +9,39 @@ use log::warn;
 
 use crate::cpu::CPU;
 use crate::debugger::DebuggerEvent;
+use crate::game_window::{GameWindow, WindowEvent};
+use crate::renderer::RenderMessage;
 
 mod cpu;
 mod debugger;
 mod disassembler;
+mod game_window;
 mod keypad;
 mod lcd;
 mod renderer;
+mod serial;
 mod sound;
 
-use sdl2::event::Event as WinEvent;
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::PixelFormatEnum;
-
 fn main() {
+    let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+    let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
 
-
-    let mut cpu = CPU::new();
+    let mut cpu = CPU::new(&vram, &palette);
     cpu.reset();
     cpu.load_bios(&std::fs::read("bios/gba_bios.bin").unwrap());
     //let rom = std::fs::read("roms/pokemon_emerald.gba").unwrap();
     //let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance2.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance4.gba").unwrap();
-    //let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
+    let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
     //let rom = std::fs::read("roms/rgb_test.gba").unwrap();
-    //let rom = std::fs::read("roms/tonc/first.gba").unwrap();
-    let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/bm_modes.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
+    //let rom = std::fs::read("roms/CPUTest.gba").unwrap();
+
+    //let rom = std::fs::read("roms/tonc/key_demo.gba").unwrap(); // Works
+    //let rom = std::fs::read("roms/tonc/pageflip.gba").unwrap(); // Works
+
     cpu.load_rom(&rom.clone());
 
     let mut dbg = Debugger::new();
@@ -45,45 +53,26 @@ fn main() {
         //0x08000492,
     ]);
 
-    let sdl_context = sdl2::init().expect("[SDL] Failed to create context");
-    let video_subsystem = sdl_context
-        .video()
-        .expect("[SDL] Failed to get video subsystem");
+    let (win_tx, win_rx) = mpsc::channel();
+    let (game_tx, game_rx) = mpsc::channel();
 
-    let window = video_subsystem
-        .window("pGBA", 240, 160)
-        .opengl()
-        .position(0, 0)
-        .build()
-        .map_err(|e| e.to_string())
-        .expect("[SDL] Failed to create window");
+    let window_handle = thread::spawn(move || {
+        let mut window = GameWindow::new();
 
-    let mut canvas = window
-        .into_canvas()
-        .build()
-        .map_err(|e| e.to_string())
-        .expect("[SDL] Failed to get canvas");
+        let vram = Arc::clone(&vram);
+        let palette = Arc::clone(&palette);
 
-    let texture_creator = canvas.texture_creator();
+        loop {
+            if let Some(events) = window.update() {
+                win_tx.send(events).unwrap();
+            }
 
-    let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGB24, 240, 160)
-        .map_err(|e| e.to_string())
-        .expect("[SDL] Cannot create texture");
-    renderer::draw_texture(&mut cpu, &mut texture);
+            if let Ok(msg) = game_rx.try_recv() {
+                window.draw(&msg, &vram.lock().unwrap(), &palette.lock().unwrap());
+            }
+        }
+    });
 
-    let mut event_pump = sdl_context
-        .event_pump()
-        .expect("[SDL] Failed to get event pump");
-
-    let mut prev = Instant::now();
-    let mut frame_timer = Duration::from_micros(0);
-
-    //cpu.io_ime = 0;
-    //cpu.io_ie = cpu::IRQ_GAMEPAK | cpu::IRQ_DEBUG1;
-    //cpu.io_bios_if = cpu::IRQ_GAMEPAK;
-
-    //cpu.halt = true;
     dbg.draw(&cpu);
 
     let start = Instant::now();
@@ -132,119 +121,35 @@ fn main() {
             dbg.draw(&mut cpu);
         }
 
-        for event in event_pump.poll_iter() {
-            match event {
-                // Keymap:
-                // GBA => Keyboard
-                // Shoulder Left => A
-                // Shoulder Right => S
-                // Up => Up
-                // Left => Left
-                // Right => Right
-                // Down => Down
-                //
-                // B => Z
-                // A => X
-                //
-                // Start => Enter
-                // Select => Backspace
-                WinEvent::Quit { .. }
-                | WinEvent::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                WinEvent::KeyDown {
-                    keycode: Some(keycode),
-                    ..
-                } => match keycode {
-                    Keycode::X => cpu.keypad.press(keypad::BUTTON_A),
-                    Keycode::Z => cpu.keypad.press(keypad::BUTTON_B),
-                    Keycode::Backspace => cpu.keypad.press(keypad::BUTTON_SELECT),
-                    Keycode::Return => cpu.keypad.press(keypad::BUTTON_START),
-                    Keycode::Right => cpu.keypad.press(keypad::BUTTON_RIGHT),
-                    Keycode::Left => cpu.keypad.press(keypad::BUTTON_LEFT),
-                    Keycode::Up => cpu.keypad.press(keypad::BUTTON_UP),
-                    Keycode::Down => cpu.keypad.press(keypad::BUTTON_DOWN),
-                    Keycode::S => cpu.keypad.press(keypad::BUTTON_R),
-                    Keycode::A => cpu.keypad.press(keypad::BUTTON_L),
-                    _ => warn!("Press: {:?}", keycode),
-                },
-                WinEvent::KeyUp {
-                    keycode: Some(keycode),
-                    ..
-                } => match keycode {
-                    Keycode::X => cpu.keypad.release(keypad::BUTTON_A),
-                    Keycode::Z => cpu.keypad.release(keypad::BUTTON_B),
-                    Keycode::Backspace => cpu.keypad.release(keypad::BUTTON_SELECT),
-                    Keycode::Return => cpu.keypad.release(keypad::BUTTON_START),
-                    Keycode::Right => cpu.keypad.release(keypad::BUTTON_RIGHT),
-                    Keycode::Left => cpu.keypad.release(keypad::BUTTON_LEFT),
-                    Keycode::Up => cpu.keypad.release(keypad::BUTTON_UP),
-                    Keycode::Down => cpu.keypad.release(keypad::BUTTON_DOWN),
-                    Keycode::S => cpu.keypad.release(keypad::BUTTON_R),
-                    Keycode::A => cpu.keypad.release(keypad::BUTTON_L),
-                    _ => warn!("Release: {:?}", keycode),
-                },
-                _ => {}
+        match dbg.update(&mut cpu) {
+            DebuggerEvent::None => {}
+            DebuggerEvent::Quit => break 'running,
+            DebuggerEvent::Reset => {
+                warn!("CPU Reset");
+                cpu.load_rom(&rom.clone());
+                cpu.reset();
             }
         }
 
-        while event::poll(Duration::from_secs(0)).unwrap_or(false) {
-            if let TermEvent::Key(key) = event::read().unwrap() {
-                if key.code == KeyCode::F(1) {
-                    dbg.input_mode = match dbg.input_mode {
-                        InputMode::GAME => InputMode::DEBUGGER,
-                        InputMode::DEBUGGER => InputMode::GAME,
-                    };
-                } else {
-                    if dbg.input_mode == InputMode::DEBUGGER {
-                        match key.code {
-                            KeyCode::Char('q') => break 'running,
-                            KeyCode::Enter => {
-                                if cpu.panic {
-                                    warn!(
-                                    "CPU in panic mode, cannot step. Reset using `r` (stuck at `{}`)",
-                                    dbg.instruction_counter
-                                );
-                                }
-
-                                dbg.paused = false
-                            }
-                            KeyCode::Char('p') => {
-                                dbg.state = match dbg.state {
-                                    ViewState::RAM => ViewState::IO,
-                                    ViewState::IO => ViewState::LOG,
-                                    ViewState::LOG => ViewState::RAM,
-                                };
-                            }
-                            KeyCode::Char('h') => dbg.free_run = !dbg.free_run,
-                            KeyCode::Char('l') => dbg.lockstep = !dbg.lockstep,
-                            KeyCode::F(2) => {
-                                dbg.free_run = true;
-                                dbg.input_mode = InputMode::GAME;
-                            }
-                            KeyCode::Char('r') => {
-                                warn!("CPU Reset");
-                                cpu.load_rom(&rom.clone());
-                                cpu.reset();
-                                dbg.reset();
-                            }
-                            KeyCode::Char('i') => {
-                                dbg.lockstep = true;
-                                dbg.paused = true;
-                                dbg.free_run = false;
-                                let can_trigger = cpu.can_irq_trigger(cpu::IRQ_DEBUG1);
-                                warn!("DEBUG1 IRQ Triggered => {can_trigger}");
-
-                                if can_trigger {
-                                    cpu.trigger_irq(cpu::IRQ_DEBUG1);
-                                }
-                            }
-                            _ => {
-                                warn!("Key: {:?}", key);
-                            }
-                        }
+        if let Ok(events) = win_rx.try_recv() {
+            for event in events {
+                match event {
+                    WindowEvent::Quit => break 'running,
+                    WindowEvent::ButtonPress(button) => {
+                        cpu.keypad.press(button);
+                        println!(
+                            "Press {button}, buttons:{:010b}",
+                            cpu.keypad.keyinput & 0x3FF
+                        );
                     }
+                    WindowEvent::ButtonRelease(button) => {
+                        cpu.keypad.release(button);
+                        println!(
+                            "Release {button}, buttons:{:010b}",
+                            cpu.keypad.keyinput & 0x3FF
+                        );
+                    }
+                    _ => {}
                 }
             }
         }
@@ -259,6 +164,7 @@ fn main() {
                 cpu.execute(opcode);
 
                 dt_cycles = cpu.cycle_count - cycles;
+
                 dbg.instruction_counter += 1;
             } else {
                 cpu.cycle_count += 1;
@@ -277,6 +183,7 @@ fn main() {
         // VBlank => 68*scanline => 83776
         // refresh => Vdraw+VBlank => 280896
 
+        //frame_timer += dt;
         timer_scanline += dt_cycles;
 
         if timer_scanline >= 1232 {
@@ -284,6 +191,12 @@ fn main() {
             let vcount = cpu.lcd.increment_vcount();
 
             if vcount == 0 {
+                game_tx
+                    .send(RenderMessage {
+                        mode: cpu.lcd.get_dispcnt_mode(),
+                        frame: cpu.lcd.get_dispcnt_frame(),
+                    })
+                    .unwrap();
             } else if vcount == 160 {
                 if cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
                     //dbg.lockstep = true;

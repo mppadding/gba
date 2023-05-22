@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use log::*;
 
 use crate::{keypad::Keypad, lcd::LCD, serial::Serial};
@@ -25,8 +27,8 @@ pub struct CPU {
     pub regs_und: [u32; 2],   // R13, R14
     pub ram_work1: [u8; 256 * 1024],
     pub ram_work2: [u8; 32 * 1024],
-    pub ram_palette: [u8; 1 * 1024],
-    pub ram_video: [u8; 96 * 1024],
+    pub ram_palette: Arc<Mutex<Vec<u8>>>,
+    pub ram_video: Arc<Mutex<Vec<u8>>>,
     pub ram_obj_attr: [u8; 1 * 1024],
     pub panic: bool,
     pub rom: Vec<u8>,
@@ -110,8 +112,8 @@ impl MMU for CPU {
                     }
                 }
             }
-            0x05000000..=0x050003FF => self.ram_palette[offset],
-            0x06000000..=0x06017FFF => self.ram_video[offset],
+            0x05000000..=0x050003FF => self.ram_palette.lock().unwrap()[offset],
+            0x06000000..=0x06017FFF => self.ram_video.lock().unwrap()[offset],
             0x07000000..=0x070003FF => self.ram_obj_attr[offset],
             0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
                 self.rom[offset]
@@ -169,10 +171,12 @@ impl MMU for CPU {
                 }
             }
             0x05000000..=0x050003FF => {
-                ((self.ram_palette[offset + 1] as u16) << 8) | (self.ram_palette[offset] as u16)
+                let palette = self.ram_palette.lock().unwrap();
+                ((palette[offset + 1] as u16) << 8) | (palette[offset] as u16)
             }
             0x06000000..=0x06017FFF => {
-                ((self.ram_video[offset + 1] as u16) << 8) | (self.ram_video[offset] as u16)
+                let vram = self.ram_video.lock().unwrap();
+                ((vram[offset + 1] as u16) << 8) | (vram[offset] as u16)
             }
             0x07000000..=0x070003FF => {
                 ((self.ram_obj_attr[offset + 1] as u16) << 8) | (self.ram_obj_attr[offset] as u16)
@@ -287,16 +291,18 @@ impl MMU for CPU {
                 }
             }
             0x05000000..=0x050003FF => {
-                ((self.ram_palette[offset + 3] as u32) << 24)
-                    | ((self.ram_palette[offset + 2] as u32) << 16)
-                    | ((self.ram_palette[offset + 1] as u32) << 8)
-                    | (self.ram_palette[offset] as u32)
+                let palette = self.ram_palette.lock().unwrap();
+                ((palette[offset + 3] as u32) << 24)
+                    | ((palette[offset + 2] as u32) << 16)
+                    | ((palette[offset + 1] as u32) << 8)
+                    | (palette[offset] as u32)
             }
             0x06000000..=0x06017FFF => {
-                ((self.ram_video[offset + 3] as u32) << 24)
-                    | ((self.ram_video[offset + 2] as u32) << 16)
-                    | ((self.ram_video[offset + 1] as u32) << 8)
-                    | (self.ram_video[offset] as u32)
+                let vram = self.ram_video.lock().unwrap();
+                ((vram[offset + 3] as u32) << 24)
+                    | ((vram[offset + 2] as u32) << 16)
+                    | ((vram[offset + 1] as u32) << 8)
+                    | (vram[offset] as u32)
             }
             0x07000000..=0x070003FF => {
                 ((self.ram_obj_attr[offset + 3] as u32) << 24)
@@ -362,11 +368,8 @@ impl MMU for CPU {
                     }
                 }
             }
-            0x05000000..=0x050003FF => self.ram_palette[offset] = val,
-            0x06000000..=0x06017FFF => {
-                panic!("Write to video");
-                self.ram_video[offset] = val
-            }
+            0x05000000..=0x050003FF => self.ram_palette.lock().unwrap()[offset] = val,
+            0x06000000..=0x06017FFF => self.ram_video.lock().unwrap()[offset] = val,
             0x07000000..=0x070003FF => self.ram_obj_attr[offset] = val,
             0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
                 if ROM_WRITING {
@@ -503,17 +506,19 @@ impl MMU for CPU {
                 }
             }
             0x05000000..=0x050003FF => {
-                self.ram_palette[offset + 3] = ((val >> 24) & 0xFF) as u8;
-                self.ram_palette[offset + 2] = ((val >> 16) & 0xFF) as u8;
-                self.ram_palette[offset + 1] = ((val >> 8) & 0xFF) as u8;
-                self.ram_palette[offset] = (val & 0xFF) as u8;
+                let mut palette = self.ram_palette.lock().unwrap();
+                palette[offset + 3] = ((val >> 24) & 0xFF) as u8;
+                palette[offset + 2] = ((val >> 16) & 0xFF) as u8;
+                palette[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                palette[offset] = (val & 0xFF) as u8;
             }
             0x06000000..=0x06017FFF => {
                 //panic!("VRAM Write `{:08X}` => `{:08X}`", addr, val);
-                self.ram_video[offset + 3] = b3;
-                self.ram_video[offset + 2] = b2;
-                self.ram_video[offset + 1] = b1;
-                self.ram_video[offset] = b0;
+                let mut vram = self.ram_video.lock().unwrap();
+                vram[offset + 3] = b3;
+                vram[offset + 2] = b2;
+                vram[offset + 1] = b1;
+                vram[offset] = b0;
             }
             0x07000000..=0x070003FF => {
                 self.ram_obj_attr[offset + 3] = ((val >> 24) & 0xFF) as u8;
@@ -634,7 +639,7 @@ pub const IRQ_DEBUG1: u16 = 1 << 14;
 pub const IRQ_DEBUG2: u16 = 1 << 15;
 
 impl CPU {
-    pub fn new() -> Self {
+    pub fn new(vram: &Arc<Mutex<Vec<u8>>>, palette: &Arc<Mutex<Vec<u8>>>) -> Self {
         Self {
             mem_ptr: 0,
             registers: [0; 16],
@@ -647,8 +652,8 @@ impl CPU {
             regs_und: [0; 2],
             ram_work1: [0; 256 * 1024],
             ram_work2: [0; 32 * 1024],
-            ram_palette: [0; 1 * 1024],
-            ram_video: [0; 96 * 1024],
+            ram_palette: Arc::clone(palette),
+            ram_video: Arc::clone(vram),
             ram_obj_attr: [0; 1 * 1024],
             panic: false,
             rom: Vec::new(),
@@ -1051,10 +1056,10 @@ impl CPU {
             }
         }
         if (flags & 0x4) != 0 {
-            self.ram_palette = [0; 1 * 1024];
+            self.ram_palette.lock().unwrap().fill(0);
         }
         if (flags & 0x8) != 0 {
-            self.ram_video = [0; 96 * 1024];
+            self.ram_video.lock().unwrap().fill(0);
         }
         if (flags & 0x10) != 0 {
             self.ram_obj_attr = [0; 1 * 1024];
