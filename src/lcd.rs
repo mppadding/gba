@@ -1,8 +1,6 @@
-pub const TIME_NS_SCANLINE: u64 = 73430;
-
-pub const DISPSTATE_VBLANK: u16 = 1 << 0;
-pub const DISPSTATE_HBLANK: u16 = 1 << 1;
-pub const DISPSTATE_VCOUNTER: u16 = 1 << 2;
+pub const DISPSTAT_VBLANK: u16 = 1 << 0;
+pub const DISPSTAT_HBLANK: u16 = 1 << 1;
+pub const DISPSTAT_VCOUNTER: u16 = 1 << 2;
 
 pub struct LCD {
     pub registers: [u8; 88],
@@ -46,22 +44,22 @@ impl LCD {
 
     pub fn set_dispstat_vblank(&mut self, set: bool) {
         self.set_dispstat(match set {
-            false => self.get_dispstat() & !(1 << 0),
-            true => self.get_dispstat() | (1 << 0),
+            false => self.get_dispstat() & !DISPSTAT_VBLANK,
+            true => self.get_dispstat() | DISPSTAT_VBLANK,
         });
     }
 
     pub fn set_dispstat_hblank(&mut self, set: bool) {
         self.set_dispstat(match set {
-            false => self.get_dispstat() & !(1 << 1),
-            true => self.get_dispstat() | (1 << 1),
+            false => self.get_dispstat() & !DISPSTAT_HBLANK,
+            true => self.get_dispstat() | DISPSTAT_HBLANK,
         });
     }
 
     pub fn set_dispstat_vcount(&mut self, set: bool) {
         self.set_dispstat(match set {
-            false => self.get_dispstat() & !(1 << 2),
-            true => self.get_dispstat() | (1 << 2),
+            false => self.get_dispstat() & !DISPSTAT_VCOUNTER,
+            true => self.get_dispstat() | DISPSTAT_VCOUNTER,
         });
     }
 
