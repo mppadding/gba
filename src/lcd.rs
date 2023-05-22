@@ -44,6 +44,27 @@ impl LCD {
         self.set_u16(4, val)
     }
 
+    pub fn set_dispstat_vblank(&mut self, set: bool) {
+        self.set_dispstat(match set {
+            false => self.get_dispstat() & !(1 << 0),
+            true => self.get_dispstat() | (1 << 0),
+        });
+    }
+
+    pub fn set_dispstat_hblank(&mut self, set: bool) {
+        self.set_dispstat(match set {
+            false => self.get_dispstat() & !(1 << 1),
+            true => self.get_dispstat() | (1 << 1),
+        });
+    }
+
+    pub fn set_dispstat_vcount(&mut self, set: bool) {
+        self.set_dispstat(match set {
+            false => self.get_dispstat() & !(1 << 2),
+            true => self.get_dispstat() | (1 << 2),
+        });
+    }
+
     pub fn is_vblank_irq_enabled(&self) -> bool {
         (self.get_dispstat() & 0x8) != 0
     }
@@ -59,6 +80,10 @@ impl LCD {
         (self.get_dispcnt() & 0x7) as u8
     }
 
+    pub fn get_dispcnt_frame(&self) -> bool {
+        (self.get_dispcnt() & 0x10) != 0
+    }
+
     pub fn get_vcount(&self) -> u16 {
         self.get_u16(6)
     }
@@ -67,9 +92,22 @@ impl LCD {
         self.set_u16(6, val)
     }
 
+    /// Increments vcount to next scanline
+    /// Updates V-Blank, H-Blank and V-Counter flag accordingly
+    /// Performs wrap around to 0 if limit reached
     pub fn increment_vcount(&mut self) -> u16 {
-        let val = self.get_u16(6) + 1;
-        self.set_u16(6, val);
-        val
+        let val = self.get_vcount();
+        let inc = match val == 227 {
+            false => val + 1,
+            true => 0,
+        };
+
+        self.set_dispstat_vblank(inc >= 160 && inc <= 226);
+
+        let lyc = (self.get_dispstat() >> 8) & 0xFF;
+        self.set_dispstat_vcount(lyc == inc);
+
+        self.set_vcount(inc);
+        inc
     }
 }
