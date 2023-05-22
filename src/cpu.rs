@@ -2473,6 +2473,27 @@ impl CPU {
         self.step_program_counter(4);
     }
 
+    fn arm_mrs(&mut self, opcode: u32) {
+        let rd = ((opcode >> 12) & 0xF) as u8;
+        let source_spsr = (opcode & 0x400000) != 0;
+
+        let psr_val = match source_spsr {
+            false => {
+                info!("execute: `MRS R{rd},CPSR`");
+                self.reg_cpsr
+            }
+            true => {
+                info!("execute: `MRS R{rd},SPSR`");
+                self.regs_spsr[self.get_mode() as usize]
+            }
+        };
+
+        self.write_register(rd, psr_val);
+
+        self.step_program_counter(4);
+        self.cycle_count += 1;
+    }
+
     fn arm_msr(&mut self, opcode: u32) {
         let dest_spsr = (opcode & 0x400000) != 0;
         let rm = (opcode & 0xF) as u8;
@@ -2645,7 +2666,11 @@ impl CPU {
         }
 
         let base = if r_base == 15 {
-            self.read_register(15) + 4
+            if self.is_thumb() {
+                self.read_register(15) + 4
+            } else {
+                self.read_register(15) + 8
+            }
         } else {
             self.read_register(r_base as u8)
         };
@@ -2789,7 +2814,7 @@ impl CPU {
                 } else if Self::opcode_match(opcode, ARM_MASK_HW_IMM_CLR, ARM_MASK_HW_IMM_SET) {
                     self.arm_halfword_data_transfer_imm(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_MRS_CLR, ARM_MASK_MRS_SET) {
-                    todo!("MRS");
+                    self.arm_mrs(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_MSR_CLR, ARM_MASK_MSR_SET) {
                     self.arm_msr(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_MSR_BITS_CLR, ARM_MASK_MSR_BITS_SET) {
