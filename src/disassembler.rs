@@ -218,7 +218,7 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
     }
 }
 
-pub fn disassemble_thumb(opcode: u32) -> (String, String) {
+pub fn disassemble_thumb(opcode: u16) -> (String, String) {
     let high = (opcode >> 8) as u8;
 
     match high {
