@@ -1,5 +1,5 @@
 use sdl2::{
-    event::{Event, EventType},
+    event::Event,
     keyboard::Keycode,
     pixels::PixelFormatEnum,
     render::{Canvas, TextureCreator},
@@ -8,7 +8,6 @@ use sdl2::{
 };
 
 use crate::{
-    cpu::CPU,
     keypad,
     renderer::{self, RenderMessage},
 };
@@ -21,7 +20,6 @@ pub struct GameWindow {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum WindowEvent {
-    None,
     Quit,
     ButtonPress(u16),
     ButtonRelease(u16),
@@ -62,7 +60,6 @@ impl GameWindow {
     }
 
     pub fn draw(&mut self, msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>) {
-        //pub fn draw(&mut self, cpu: &mut CPU) {
         self.canvas.clear();
         let mut texture = self
             .texture_creator
@@ -79,7 +76,6 @@ impl GameWindow {
     }
 
     pub fn update(&mut self) -> Option<Vec<WindowEvent>> {
-        //pub fn update(&mut self, cpu: &mut CPU) -> WindowEvent {
         let mut events = Vec::new();
         for event in self.event_pump.poll_iter() {
             match event {
