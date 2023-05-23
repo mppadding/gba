@@ -1917,7 +1917,11 @@ impl CPU {
             self.operation_ldm_stm(13, r_list, load, true, true, false, false);
         }
 
-        self.step_program_counter(2);
+        if load && store_lr {
+            // Rewritten PC from pop, do not step
+        } else {
+            self.step_program_counter(2);
+        }
     }
 
     /// Format15
