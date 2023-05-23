@@ -1,5 +1,5 @@
 use std::backtrace::Backtrace;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 use std::{panic, thread};
@@ -8,11 +8,14 @@ use cpu::MMU;
 use debugger::Debugger;
 use log::warn;
 
+use crate::backtrace::print_cpu_backtrace;
+use crate::backtrace::PC_BACKTRACE;
 use crate::cpu::CPU;
 use crate::debugger::DebuggerEvent;
 use crate::game_window::{GameWindow, WindowEvent};
 use crate::renderer::RenderMessage;
 
+mod backtrace;
 mod cpu;
 mod debugger;
 mod disassembler;
@@ -23,60 +26,13 @@ mod renderer;
 mod serial;
 mod sound;
 
-// PC, Opcode, is_thumb
-static mut PC_BACKTRACE: VecDeque<(u32, u32, bool, String, String)> = VecDeque::new();
-
-fn print_pc_backtrace() {
-    println!("CPU Backtrace:");
-    // Accesses static mut pc_backtrace. Must be unsafe due to multiple thread access
-    unsafe {
-        let mut i = 0;
-        for (pc, opcode, thumb, asm_reg, asm) in PC_BACKTRACE.iter() {
-            match thumb {
-                false => {
-                    //let (asm, _) = disassembler::disassemble_arm(*opcode, *pc);
-                    println!("\t{i:2}: [0x{pc:08X}] => 0x{opcode:08X} => {asm_reg}")
-                }
-                true => {
-                    //let (asm, _) = disassembler::disassemble_thumb(*opcode as u16);
-                    println!("\t{i:2}: [0x{pc:08X}] =>     0x{opcode:04X} => {asm_reg}")
-                }
-            }
-            println!("\t                               => {asm}");
-            i += 1;
-        }
-    }
-}
-
-fn replace_registers_in_string(cpu: &CPU, str: &String) -> String {
-    str.replace("R0", format!("0x{:X}", cpu.read_register(0)).as_str())
-        .replace("R1", format!("0x{:X}", cpu.read_register(1)).as_str())
-        .replace("R2", format!("0x{:X}", cpu.read_register(2)).as_str())
-        .replace("R3", format!("0x{:X}", cpu.read_register(3)).as_str())
-        .replace("R4", format!("0x{:X}", cpu.read_register(4)).as_str())
-        .replace("R5", format!("0x{:X}", cpu.read_register(5)).as_str())
-        .replace("R6", format!("0x{:X}", cpu.read_register(6)).as_str())
-        .replace("R7", format!("0x{:X}", cpu.read_register(7)).as_str())
-        .replace("R8", format!("0x{:X}", cpu.read_register(8)).as_str())
-        .replace("R9", format!("0x{:X}", cpu.read_register(9)).as_str())
-        .replace("R10", format!("0x{:X}", cpu.read_register(10)).as_str())
-        .replace("R11", format!("0x{:X}", cpu.read_register(11)).as_str())
-        .replace("R12", format!("0x{:X}", cpu.read_register(12)).as_str())
-        .replace("R13", format!("0x{:X}", cpu.read_register(13)).as_str())
-        .replace("R14", format!("0x{:X}", cpu.read_register(14)).as_str())
-        .replace("R15", format!("0x{:X}", cpu.read_register(15)).as_str())
-        .replace("SP", format!("0x{:X}", cpu.read_register(13)).as_str())
-        .replace("LR", format!("0x{:X}", cpu.read_register(14)).as_str())
-        .replace("PC", format!("0x{:X}", cpu.read_register(15)).as_str())
-}
-
 fn main() {
     panic::set_hook(Box::new(|panic_info| {
         let bt = Backtrace::capture();
 
         println!("{panic_info}");
         println!("Backtrace:\n{bt}");
-        print_pc_backtrace();
+        print_cpu_backtrace();
     }));
 
     let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
@@ -197,13 +153,13 @@ fn main() {
 
         dbg.opcode = opcode;
 
-        if !cpu.panic && (!dbg.paused || dbg.free_run) {
-            if dbg.breakpoints.contains(&program_counter) {
-                warn!("Breakpoint hit at `{:08X}`", program_counter);
-                dbg.free_run = false;
-                dbg.paused = true;
-                dbg.lockstep = true;
-            }
+        #[cfg(feature = "debugger")]
+        if !cpu.panic && (!dbg.paused || dbg.free_run) && dbg.breakpoints.contains(&program_counter)
+        {
+            warn!("Breakpoint hit at `{:08X}`", program_counter);
+            dbg.free_run = false;
+            dbg.paused = true;
+            dbg.lockstep = true;
         }
 
         if cpu.panic || dbg.lockstep || !dbg.free_run {
@@ -251,19 +207,26 @@ fn main() {
             }
 
             if !cpu.halt || (cpu.halt && cpu.get_mode() == cpu::MODE_IRQ) {
-                let (asm, _) = match is_thumb {
-                    false => disassembler::disassemble_arm(opcode, program_counter),
-                    true => disassembler::disassemble_thumb(opcode as u16),
-                };
-                let asm_reg = replace_registers_in_string(&cpu, &asm);
+                #[cfg(feature = "backtrace")]
+                {
+                    let (asm, _) = match is_thumb {
+                        false => disassembler::disassemble_arm(opcode, program_counter),
+                        true => disassembler::disassemble_thumb(opcode as u16),
+                    };
+                    #[cfg(feature = "full-backtrace")]
+                    let asm_reg = backtrace::replace_registers_in_string(&cpu, &asm);
 
-                // Unsafe due to static mut PC_BACKTRACE
-                unsafe {
-                    if PC_BACKTRACE.len() == 32 {
-                        PC_BACKTRACE.pop_back();
+                    #[cfg(not(feature = "full-backtrace"))]
+                    let asm_reg = String::from("full-backtrace disabled");
+
+                    // Unsafe due to static mut PC_BACKTRACE
+                    unsafe {
+                        if PC_BACKTRACE.len() == 32 {
+                            PC_BACKTRACE.pop_back();
+                        }
+
+                        PC_BACKTRACE.push_front((program_counter, opcode, is_thumb, asm, asm_reg));
                     }
-
-                    PC_BACKTRACE.push_front((program_counter, opcode, is_thumb, asm, asm_reg));
                 }
 
                 let cycles = cpu.cycle_count;

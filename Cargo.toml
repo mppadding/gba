@@ -17,3 +17,5 @@ debug = 1
 
 [features]
 debugger = []
+backtrace = []
+full-backtrace = ["backtrace"]

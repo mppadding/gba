@@ -23,7 +23,7 @@ use tui_logger::{init_logger, TuiLoggerSmartWidget, TuiWidgetState};
 
 use crate::{
     cpu::{CPU, MMU},
-    disassembler, print_pc_backtrace,
+    disassembler, print_cpu_backtrace,
 };
 
 pub enum ViewState {
@@ -270,7 +270,7 @@ impl Debugger {
 
             println!("{panic_info}");
             println!("Backtrace:\n{bt}");
-            print_pc_backtrace();
+            print_cpu_backtrace();
         }));
     }
 }
