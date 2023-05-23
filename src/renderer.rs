@@ -1,3 +1,4 @@
+use log::warn;
 use sdl2::render::Texture;
 
 pub struct RenderMessage {
@@ -30,8 +31,12 @@ fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8) -> (u8, u8, u8) {
 }
 
 pub fn draw_texture(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture: &mut Texture) {
+    let mode = msg.mode;
+    //let mode = 5;
+
     //println!("Drawing in mode: {}", msg.mode);
-    match msg.mode {
+    //warn!("Drawing in mode: {}", msg.mode);
+    match mode {
         0 => {
             texture
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
@@ -111,7 +116,7 @@ pub fn draw_texture(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, text
                             let addr = base + (x + (y * 240));
                             let pixel = vram[addr];
 
-                            let (r, g, b) = get_palette_color(palette, msg.mode, pixel);
+                            let (r, g, b) = get_palette_color(palette, mode, pixel);
 
                             buffer[offset] = r;
                             buffer[offset + 1] = g;
@@ -122,15 +127,31 @@ pub fn draw_texture(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, text
                 .expect("[SDL] Cannot fill texture");
         }
         5 => {
+            let base = match msg.frame {
+                false => 0x0000,
+                true => 0xA000,
+            };
+
             texture
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
                     for y in 0..160 {
                         for x in 0..240 {
                             let offset = y * pitch + x * 3;
 
-                            buffer[offset] = 0xFF;
-                            buffer[offset + 1] = 0xFF;
-                            buffer[offset + 2] = 0xFF;
+                            if y < 128 && x < 160 {
+                                let addr = base + ((x + (y * 160)) * 2) as usize;
+                                let pixel = ((vram[addr + 1] as u16) << 8) | vram[addr] as u16;
+
+                                let (r, g, b) = get_colors(pixel);
+
+                                buffer[offset] = r;
+                                buffer[offset + 1] = g;
+                                buffer[offset + 2] = b;
+                            } else {
+                                buffer[offset] = 0xFF;
+                                buffer[offset + 1] = 0x00;
+                                buffer[offset + 2] = 0xFF;
+                            }
                         }
                     }
                 })
