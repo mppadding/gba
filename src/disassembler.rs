@@ -42,14 +42,43 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
                 let offset = (((opcode >> 4) & 0xF0) as u8) | ((opcode & 0xF) as u8);
                 let h = (opcode & 0x20) != 0;
                 let s = (opcode & 0x40) != 0;
+                let rd = (opcode >> 12) & 0xF;
+                let rn = (opcode >> 16) & 0xF;
 
                 let load = (opcode & 0x100000) != 0;
                 let write_back = (opcode & 0x200000) != 0;
                 let up = (opcode & 0x800000) != 0;
                 let pre = (opcode & 0x1000000) != 0;
 
+                let mut asm = match load {
+                    false => String::from("STR"),
+                    true => String::from("LDR"),
+                };
+
+                if load && s {
+                    asm.push_str("S");
+                }
+
+                match h {
+                    false => asm.push_str("B"),
+                    true => asm.push_str("H"),
+                }
+
+                asm.push_str(format!(" R{rd},[R{rn}").as_str());
+
+                match (pre, up) {
+                    (false, false) => asm.push_str(format!("],-#0x{offset:X}").as_str()),
+                    (false, true) => asm.push_str(format!("],#0x{offset:X}").as_str()),
+                    (true, false) => asm.push_str(format!(",-#0x{offset:X}]").as_str()),
+                    (true, true) => asm.push_str(format!(",#0x{offset:X}]").as_str()),
+                }
+
+                if write_back {
+                    asm.push_str("!");
+                }
+
                 (
-                    "Halfword Data Transfer: immediate offset".to_string(),
+                    format!("{asm}"),
                     "COND ---P U-WL Rn__ Rd__ OffH -SH- OffL".to_string(),
                 )
             } else if CPU::opcode_match(opcode, ARM_MASK_MRS_CLR, ARM_MASK_MRS_SET) {
@@ -386,19 +415,24 @@ pub fn disassemble_thumb(opcode: u16) -> (String, String) {
 
             let bits = "---B LOffsetRb__Rd_";
 
+            let offset = match byte {
+                false => offset << 2,
+                true => offset,
+            };
+
             (
                 match (load, byte) {
                     (false, false) => {
-                        format!("STR R{},[R{},#{}]", rd, rb, offset)
+                        format!("STR R{},[R{},#{:X}]", rd, rb, offset)
                     }
                     (true, false) => {
-                        format!("LDR R{},[R{},#{}]", rd, rb, offset)
+                        format!("LDR R{},[R{},#{:X}]", rd, rb, offset)
                     }
                     (false, true) => {
-                        format!("STRB R{},[R{},#{}]", rd, rb, offset)
+                        format!("STRB R{},[R{},#{:X}]", rd, rb, offset)
                     }
                     (true, true) => {
-                        format!("LDRB R{},[R{},#{}]", rd, rb, offset)
+                        format!("LDRB R{},[R{},#{:X}]", rd, rb, offset)
                     }
                 },
                 bits.to_string(),
