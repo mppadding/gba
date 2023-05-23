@@ -112,4 +112,46 @@ impl LCD {
         self.set_vcount(inc);
         inc
     }
+
+    pub fn get_background_control(&self, n: u8) -> u16 {
+        self.get_u16(0x8 + (n * 2) as u32)
+    }
+
+    pub fn set_background_control(&mut self, n: u8, val: u16) {
+        self.set_u16(0x8 + (n * 2) as u32, val);
+    }
+
+    pub fn get_background_offset(&self, n: u8) -> (u16, u16) {
+        let offset = 0x10 + (n * 4) as u32;
+        (self.get_u16(offset), self.get_u16(offset + 2))
+    }
+
+    pub fn get_window_dimensions(&self, n: u8) -> (u16, u16) {
+        let offset = 0x40 + (n * 2) as u32;
+        (self.get_u16(offset), self.get_u16(offset + 4))
+    }
+
+    pub fn get_winin(&self) -> u16 {
+        self.get_u16(0x48)
+    }
+
+    pub fn get_winout(&self) -> u16 {
+        self.get_u16(0x4A)
+    }
+
+    pub fn get_mosaic(&self) -> u16 {
+        self.get_u16(0x4C)
+    }
+
+    pub fn get_bldcnt(&self) -> u16 {
+        self.get_u16(0x50)
+    }
+
+    pub fn get_bldalpha(&self) -> u16 {
+        self.get_u16(0x52)
+    }
+
+    pub fn get_bldy(&self) -> u16 {
+        self.get_u16(0x54)
+    }
 }

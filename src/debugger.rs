@@ -554,17 +554,33 @@ fn format_sound(cpu: &mut CPU) -> String {
 fn format_lcd(cpu: &mut CPU) -> String {
     let mut fmt = String::new();
 
+    let bg0cnt = cpu.lcd.get_background_control(0);
+    let bg1cnt = cpu.lcd.get_background_control(1);
+    let bg2cnt = cpu.lcd.get_background_control(2);
+    let bg3cnt = cpu.lcd.get_background_control(3);
+
+    let (bg0off_x, bg0off_y) = cpu.lcd.get_background_offset(0);
+    let (bg1off_x, bg1off_y) = cpu.lcd.get_background_offset(1);
+    let (bg2off_x, bg2off_y) = cpu.lcd.get_background_offset(2);
+    let (bg3off_x, bg3off_y) = cpu.lcd.get_background_offset(3);
+
+    let (win0_h, win0_v) = cpu.lcd.get_window_dimensions(0);
+    let (win1_h, win1_v) = cpu.lcd.get_window_dimensions(1);
+
+    let winin = cpu.lcd.get_winin();
+    let winout = cpu.lcd.get_winout();
+
     fmt.push_str(format!("    DISPCNT│       {:04X}h\n", cpu.lcd.get_dispcnt()).as_str());
     fmt.push_str(format!("   DISPSTAT│       {:04X}h\n", cpu.lcd.get_dispstat()).as_str());
     fmt.push_str(format!("     VCOUNT│        {:03}\n", cpu.lcd.get_vcount()).as_str());
-    fmt.push_str(format!("     BG0CNT│       ????h\n").as_str());
-    fmt.push_str(format!("     BG1CNT│       ????h\n").as_str());
-    fmt.push_str(format!("     BG2CNT│       ????h\n").as_str());
-    fmt.push_str(format!("     BG3CNT│       ????h\n").as_str());
-    fmt.push_str(format!(" BG0 Off XY│ ????h,????h\n").as_str());
-    fmt.push_str(format!(" BG1 Off XY│ ????h,????h\n").as_str());
-    fmt.push_str(format!(" BG2 Off XY│ ????h,????h\n").as_str());
-    fmt.push_str(format!(" BG3 Off XY│ ????h,????h\n").as_str());
+    fmt.push_str(format!("     BG0CNT│       {:04X}h\n", bg0cnt).as_str());
+    fmt.push_str(format!("     BG1CNT│       {:04X}h\n", bg1cnt).as_str());
+    fmt.push_str(format!("     BG2CNT│       {:04X}h\n", bg2cnt).as_str());
+    fmt.push_str(format!("     BG3CNT│       {:04X}h\n", bg3cnt).as_str());
+    fmt.push_str(format!(" BG0 Off XY│ {:04X}h,{:04X}h\n", bg0off_x, bg0off_y).as_str());
+    fmt.push_str(format!(" BG1 Off XY│ {:04X}h,{:04X}h\n", bg1off_x, bg1off_y).as_str());
+    fmt.push_str(format!(" BG2 Off XY│ {:04X}h,{:04X}h\n", bg2off_x, bg2off_y).as_str());
+    fmt.push_str(format!(" BG3 Off XY│ {:04X}h,{:04X}h\n", bg3off_x, bg3off_y).as_str());
     fmt.push_str(format!("  BG2 PA,PB│ ????h,????h\n").as_str());
     fmt.push_str(format!("  BG2 PC,PD│ ????h,????h\n").as_str());
     fmt.push_str(format!("       BG2X│   ????????h\n").as_str());
@@ -573,9 +589,9 @@ fn format_lcd(cpu: &mut CPU) -> String {
     fmt.push_str(format!("  BG3 PC,PD│ ????h,????h\n").as_str());
     fmt.push_str(format!("       BG3X│   ????????h\n").as_str());
     fmt.push_str(format!("       BG3Y│   ????????h\n").as_str());
-    fmt.push_str(format!("    WIN0 HV│ ????h,????h\n").as_str());
-    fmt.push_str(format!("    WIN1 HV│ ????h,????h\n").as_str());
-    fmt.push_str(format!(" WIN IN,OUT│ ????h,????h\n").as_str());
+    fmt.push_str(format!("    WIN0 HV│ {:04X}h,{:04X}h\n", win0_h, win0_v).as_str());
+    fmt.push_str(format!("    WIN1 HV│ {:04X}h,{:04X}h\n", win1_h, win1_v).as_str());
+    fmt.push_str(format!(" WIN IN,OUT│ {:04X}h,{:04X}h\n", winin, winout).as_str());
 
     fmt
 }
@@ -601,10 +617,10 @@ fn format_serial(cpu: &mut CPU) -> String {
     fmt.push_str(format!("           │\n").as_str());
     fmt.push_str(format!("           │\n").as_str());
     fmt.push_str(format!("─LCD──────────────────\n").as_str());
-    fmt.push_str(format!("     MOSAIC│     ????h\n").as_str());
-    fmt.push_str(format!("     BLDCNT│     ????h\n").as_str());
-    fmt.push_str(format!("   BLDALPHA│     ????h\n").as_str());
-    fmt.push_str(format!("       BLDY│     ????h\n").as_str());
+    fmt.push_str(format!("     MOSAIC│     {:04X}h\n", cpu.lcd.get_mosaic()).as_str());
+    fmt.push_str(format!("     BLDCNT│     {:04X}h\n", cpu.lcd.get_bldcnt()).as_str());
+    fmt.push_str(format!("   BLDALPHA│     {:04X}h\n", cpu.lcd.get_bldalpha()).as_str());
+    fmt.push_str(format!("       BLDY│     {:04X}h\n", cpu.lcd.get_bldy()).as_str());
 
     fmt
 }
