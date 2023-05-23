@@ -68,7 +68,9 @@ fn main() {
             }
 
             if let Ok(msg) = game_rx.try_recv() {
-                window.draw(&msg, &vram.lock().unwrap(), &palette.lock().unwrap());
+                if !window.paused {
+                    window.draw(&msg, &vram.lock().unwrap(), &palette.lock().unwrap());
+                }
             }
         }
     });
@@ -83,8 +85,10 @@ fn main() {
 
     let mut timer_scanline: usize = 0;
     let mut dt_cycles: usize = 0;
+    let mut lcd_pause = false;
 
     'running: loop {
+        let is_thumb = cpu.is_thumb();
         let program_counter = cpu.get_program_counter();
         let opcode: u32 = if !cpu.addr_valid(program_counter) {
             if !cpu.panic {
@@ -93,7 +97,7 @@ fn main() {
             }
             dbg.opcode
         } else {
-            match cpu.is_thumb() {
+            match is_thumb {
                 true => {
                     let word = cpu.read_u32(false, program_counter & 0xFFFFFFFE);
                     let upper = (program_counter & 0x1) == 0x1;
@@ -149,6 +153,8 @@ fn main() {
                             cpu.keypad.keyinput & 0x3FF
                         );
                     }
+                    WindowEvent::Pause(paused) => lcd_pause = paused,
+                    WindowEvent::NextVCount => timer_scanline = 1232,
                     _ => {}
                 }
             }
@@ -184,7 +190,9 @@ fn main() {
         // refresh => Vdraw+VBlank => 280896
 
         //frame_timer += dt;
-        timer_scanline += dt_cycles;
+        if !lcd_pause {
+            timer_scanline += dt_cycles;
+        }
 
         if timer_scanline >= 1232 {
             timer_scanline -= 1232;
@@ -198,7 +206,7 @@ fn main() {
                     })
                     .unwrap();
             } else if vcount == 160 {
-                if cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
+                if dbg.free_run && cpu.can_irq_trigger(cpu::IRQ_VBLANK) {
                     //dbg.lockstep = true;
                     //dbg.paused = true;
                     //dbg.free_run = false;
@@ -206,6 +214,15 @@ fn main() {
 
                     cpu.trigger_irq(cpu::IRQ_VBLANK);
                 }
+            }
+
+            if dbg.free_run
+                && cpu.lcd.get_dispstat_vcount_flag()
+                && cpu.can_irq_trigger(cpu::IRQ_VCOUNT)
+            {
+                warn!("VCount IRQ Triggered");
+
+                cpu.trigger_irq(cpu::IRQ_VCOUNT);
             }
         }
 
@@ -215,7 +232,7 @@ fn main() {
             cpu.lcd.set_dispstat_hblank(false); // Hdraw
         } else {
             cpu.lcd.set_dispstat_hblank(true); // Hblank
-            if cpu.can_irq_trigger(cpu::IRQ_HBLANK) {
+            if dbg.free_run && cpu.can_irq_trigger(cpu::IRQ_HBLANK) {
                 //dbg.lockstep = true;
                 //dbg.paused = true;
                 //dbg.free_run = false;

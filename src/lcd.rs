@@ -38,6 +38,10 @@ impl LCD {
         self.get_u16(4)
     }
 
+    pub fn get_dispstat_vcount_flag(&self) -> bool {
+        (self.get_u16(4) & DISPSTAT_VCOUNTER) != 0
+    }
+
     pub fn set_dispstat(&mut self, val: u16) {
         self.set_u16(4, val)
     }

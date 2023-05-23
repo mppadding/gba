@@ -1,3 +1,4 @@
+use log::info;
 use sdl2::{
     event::Event,
     keyboard::Keycode,
@@ -16,6 +17,7 @@ pub struct GameWindow {
     canvas: Canvas<Window>,
     pub texture_creator: TextureCreator<WindowContext>,
     pub event_pump: EventPump,
+    pub paused: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -23,6 +25,8 @@ pub enum WindowEvent {
     Quit,
     ButtonPress(u16),
     ButtonRelease(u16),
+    Pause(bool),
+    NextVCount,
 }
 
 impl GameWindow {
@@ -56,6 +60,7 @@ impl GameWindow {
             canvas,
             texture_creator,
             event_pump,
+            paused: false,
         }
     }
 
@@ -114,6 +119,12 @@ impl GameWindow {
                     Keycode::Down => events.push(WindowEvent::ButtonPress(keypad::BUTTON_DOWN)),
                     Keycode::S => events.push(WindowEvent::ButtonPress(keypad::BUTTON_R)),
                     Keycode::A => events.push(WindowEvent::ButtonPress(keypad::BUTTON_L)),
+                    Keycode::P => {
+                        self.paused = !self.paused;
+                        info!("LCD Paused={}", self.paused);
+                        events.push(WindowEvent::Pause(self.paused));
+                    }
+                    Keycode::N => events.push(WindowEvent::NextVCount),
                     _ => {}
                 },
                 Event::KeyUp {
