@@ -37,8 +37,9 @@ fn main() {
 
     let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
     let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+    let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
 
-    let mut cpu = CPU::new(&vram, &palette);
+    let mut cpu = CPU::new(&vram, &palette, &oam);
     cpu.reset();
     cpu.load_bios(&std::fs::read("bios/gba_bios.bin").unwrap());
 
@@ -110,7 +111,12 @@ fn main() {
 
             if let Ok(msg) = game_rx.try_recv() {
                 if !window.paused {
-                    window.draw(&msg, &vram.lock().unwrap(), &palette.lock().unwrap());
+                    window.draw(
+                        &msg,
+                        &vram.lock().unwrap(),
+                        &palette.lock().unwrap(),
+                        &oam.lock().unwrap(),
+                    );
                 }
             }
         }

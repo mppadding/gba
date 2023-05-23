@@ -64,7 +64,7 @@ impl GameWindow {
         }
     }
 
-    pub fn draw(&mut self, msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>) {
+    pub fn draw(&mut self, msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, oam: &Vec<u8>) {
         self.canvas.clear();
         let mut texture = self
             .texture_creator
@@ -72,7 +72,7 @@ impl GameWindow {
             .map_err(|e| e.to_string())
             .expect("[SDL] Cannot create texture");
 
-        renderer::draw_texture(msg, vram, palette, &mut texture);
+        renderer::draw_texture(msg, vram, palette, oam, &mut texture);
         self.canvas
             .copy(&texture, None, None)
             .expect("[SDL] Cannot copy texture");

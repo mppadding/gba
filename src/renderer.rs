@@ -30,7 +30,13 @@ fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8) -> (u8, u8, u8) {
     }
 }
 
-pub fn draw_texture(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture: &mut Texture) {
+pub fn draw_texture(
+    msg: &RenderMessage,
+    vram: &Vec<u8>,
+    palette: &Vec<u8>,
+    oam: &Vec<u8>,
+    texture: &mut Texture,
+) {
     let mode = msg.mode;
     //let mode = 5;
 
