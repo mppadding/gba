@@ -5,6 +5,7 @@ use log::*;
 use crate::{keypad::Keypad, lcd::LCD, serial::Serial};
 
 const ROM_WRITING: bool = false;
+const INTERNAL_PANIC: bool = false;
 
 pub trait MMU {
     fn read_u8(&mut self, intern: bool, addr: u32) -> u8;
@@ -88,6 +89,7 @@ impl MMU for CPU {
 
                 match io_addr {
                     0x00..=0x56 => self.lcd.registers[io_addr],
+                    // Sound => 0x60..=0xA7
                     0x60..=0xA7 => {
                         if intern {
                             warn!("Read8 from Sound IO `{:08X}`", addr);
@@ -119,8 +121,20 @@ impl MMU for CPU {
                 self.rom[offset]
             }
             _ => {
-                error!("Panicked! Address out of range `{:08X}`", addr);
-                self.panic = true;
+                if INTERNAL_PANIC {
+                    error!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                    self.panic = true;
+                } else {
+                    panic!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                }
                 0
             }
         }
@@ -185,8 +199,20 @@ impl MMU for CPU {
                 ((self.rom[offset + 1] as u16) << 8) | (self.rom[offset] as u16)
             }
             _ => {
-                error!("Panicked! Address out of range `{:08X}`", addr);
-                self.panic = true;
+                if INTERNAL_PANIC {
+                    error!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                    self.panic = true;
+                } else {
+                    panic!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                }
                 0
             }
         }
@@ -199,7 +225,11 @@ impl MMU for CPU {
             self.mem_ptr = addr;
 
             if addr < 0x00003FFF {
-                panic!("In bios `{:08X}`", addr);
+                panic!(
+                    "[0x{:08X}] In bios `{:08X}`",
+                    self.get_program_counter(),
+                    addr
+                );
             }
         }
 
@@ -317,8 +347,20 @@ impl MMU for CPU {
                     | (self.rom[offset] as u32)
             }
             _ => {
-                error!("Panicked! Address out of range `{:08X}`", addr);
-                self.panic = true;
+                if INTERNAL_PANIC {
+                    error!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                    self.panic = true;
+                } else {
+                    panic!(
+                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                }
                 0
             }
         }
@@ -381,8 +423,20 @@ impl MMU for CPU {
                 }
             }
             _ => {
-                error!("Panicked! Write8 Address out of range `{:08X}`", addr);
-                self.panic = true;
+                if INTERNAL_PANIC {
+                    error!(
+                        "[0x{:08X}] Panicked! Write8 Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                    self.panic = true;
+                } else {
+                    panic!(
+                        "[0x{:08X}] Panicked! Write8 Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                }
             }
         }
     }
@@ -542,14 +596,27 @@ impl MMU for CPU {
                 }
             }
             _ => {
-                error!("Write32 Address out of range `{:08X}`", addr);
-                self.panic = true;
+                if INTERNAL_PANIC {
+                    error!(
+                        "[0x{:08X}] Panicked! Write32 Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                    self.panic = true;
+                } else {
+                    panic!(
+                        "[0x{:08X}] Panicked! Write32 Address out of range `{:08X}`",
+                        self.get_program_counter(),
+                        addr
+                    );
+                }
             }
         }
     }
 
     fn addr_valid(&self, addr: u32) -> bool {
         let addr = addr & 0x0FFFFFFF;
+
         match addr {
             (0x00000000..=0x00003FFF)
             | (0x02000000..=0x0203FFFF)
@@ -1541,21 +1608,33 @@ impl CPU {
         match (load, byte) {
             (false, false) => {
                 self.write_u32(true, ptr, self.read_register(rd));
-                info!("execute: `STR R{rd},[R{rb},R{ro}]`");
+                info!(
+                    "[0x{:08X}] => execute: `STR R{rd},[R{rb},R{ro}]`",
+                    self.get_program_counter()
+                );
             }
             (false, true) => {
                 self.write_u8(true, ptr, (self.read_register(rd) & 0xFF) as u8);
-                info!("execute: `STRB R{rd},[R{rb},R{ro}]`");
+                info!(
+                    "[0x{:08X}] => execute: `STRB R{rd},[R{rb},R{ro}]`",
+                    self.get_program_counter()
+                );
             }
             (true, false) => {
                 let val = self.read_u32(true, ptr);
                 self.write_register(rd, val);
-                info!("execute: `LDR R{rd},[R{rb},R{ro}]`");
+                info!(
+                    "[0x{:08X}] => execute: `LDR R{rd},[R{rb},R{ro}]`",
+                    self.get_program_counter()
+                );
             }
             (true, true) => {
                 let val = self.read_u8(true, ptr);
                 self.write_register(rd, val as u32);
-                info!("execute: `LDRB R{rd},[R{rb},R{ro}]`");
+                info!(
+                    "[0x{:08X}] => execute: `LDRB R{rd},[R{rb},R{ro}]`",
+                    self.get_program_counter()
+                );
             }
         }
 
@@ -1648,10 +1727,22 @@ impl CPU {
         };
 
         match (load, byte) {
-            (false, false) => info!("execute: `STR R{rd},[R{rb},#0x{offset:X}]`"),
-            (false, true) => info!("execute: `STRB R{rd},[R{rb},#0x{offset:X}]`"),
-            (true, false) => info!("execute: `LDR R{rd},[R{rb},#0x{offset:X}]`"),
-            (true, true) => info!("execute: `LDRB R{rd},[R{rb},#0x{offset:X}]`"),
+            (false, false) => info!(
+                "[0x{:08X}] => execute: `STR R{rd},[R{rb},#0x{offset:X}]`",
+                self.get_program_counter()
+            ),
+            (false, true) => info!(
+                "[0x{:08X}] => execute: `STRB R{rd},[R{rb},#0x{offset:X}]`",
+                self.get_program_counter()
+            ),
+            (true, false) => info!(
+                "[0x{:08X}] => execute: `LDR R{rd},[R{rb},#0x{offset:X}]`",
+                self.get_program_counter()
+            ),
+            (true, true) => info!(
+                "[0x{:08X}] => execute: `LDRB R{rd},[R{rb},#0x{offset:X}]`",
+                self.get_program_counter()
+            ),
         }
 
         self.operation_ldr_str(rd, rb, offset, load, false, true, true, byte, false);
@@ -1783,19 +1874,31 @@ impl CPU {
 
         let r_list = match (load, store_lr) {
             (false, true) => {
-                info!("execute: `PUSH {{{r_list:08b}, LR}}");
+                info!(
+                    "[0x{:08X}] => execute: `PUSH {{{r_list:08b}, LR}}",
+                    self.get_program_counter()
+                );
                 r_list | (1 << 14)
             }
             (true, true) => {
-                info!("execute: `POP {{{r_list:08b}, PC}}");
+                info!(
+                    "[0x{:08X}] => execute: `POP {{{r_list:08b}, PC}}",
+                    self.get_program_counter()
+                );
                 r_list | (1 << 15)
             }
             (false, false) => {
-                info!("execute: `PUSH {{{r_list:08b}}}");
+                info!(
+                    "[0x{:08X}] => execute: `PUSH {{{r_list:08b}}}",
+                    self.get_program_counter()
+                );
                 r_list
             }
             (true, false) => {
-                info!("execute: `POP {{{r_list:08b}}}");
+                info!(
+                    "[0x{:08X}] => execute: `POP {{{r_list:08b}}}",
+                    self.get_program_counter()
+                );
                 r_list
             }
         };
@@ -1843,7 +1946,7 @@ impl CPU {
         let offset = ((opcode & 0xFF) << 1) as u32;
         let cond = ((opcode >> 8) & 0xF) as u8;
 
-        let offset = match (offset & 0x100) == 0 {
+        let offset = match (opcode & 0x80) == 0 {
             false => offset | 0xFFFFFE00,
             true => offset,
         };
@@ -2467,10 +2570,30 @@ impl CPU {
         let reg = (opcode & (1 << 25)) != 0;
 
         match (load, byte) {
-            (false, false) => info!("execute: `STR R{rd}[???] => Single Data Transfer`"),
-            (false, true) => info!("execute: `STRB R{rd}[???] => Single Data Transfer`"),
-            (true, false) => info!("execute: `LDR R{rd},[???] => Single Data Transfer`"),
-            (true, true) => info!("execute: `LDRB R{rd},[???] => Single Data Transfer`"),
+            (false, false) => {
+                info!(
+                    "[0x{:08X}] => execute: `STR R{rd}[???] => Single Data Transfer`",
+                    self.get_program_counter()
+                )
+            }
+            (false, true) => {
+                info!(
+                    "[0x{:08X}] => execute: `STRB R{rd}[???] => Single Data Transfer`",
+                    self.get_program_counter()
+                )
+            }
+            (true, false) => {
+                info!(
+                    "[0x{:08X}] => execute: `LDR R{rd},[???] => Single Data Transfer`",
+                    self.get_program_counter()
+                )
+            }
+            (true, true) => {
+                info!(
+                    "[0x{:08X}] => execute: `LDRB R{rd},[???] => Single Data Transfer`",
+                    self.get_program_counter()
+                )
+            }
         }
 
         self.operation_ldr_str(rd, rb, offset, load, write_back, pre, up, byte, reg);
@@ -2484,11 +2607,17 @@ impl CPU {
 
         let psr_val = match source_spsr {
             false => {
-                info!("execute: `MRS R{rd},CPSR`");
+                info!(
+                    "[0x{:08X}] => execute: `MRS R{rd},CPSR`",
+                    self.get_program_counter()
+                );
                 self.reg_cpsr
             }
             true => {
-                info!("execute: `MRS R{rd},SPSR`");
+                info!(
+                    "[0x{:08X}] => execute: `MRS R{rd},SPSR`",
+                    self.get_program_counter()
+                );
                 self.regs_spsr[self.get_mode() as usize]
             }
         };
@@ -2578,12 +2707,18 @@ impl CPU {
                 // Unsigned Halfwords
                 match load {
                     false => {
-                        info!("execute: `STRH R{rd},[R{rn},#0x{offset:X}]`");
+                        info!(
+                            "[0x{:08X}] => execute: `STRH R{rd},[R{rn},#0x{offset:X}]`",
+                            self.get_program_counter()
+                        );
                         let val = self.read_register(rd) & 0xFFFF;
                         self.write_u32(true, base, val);
                     }
                     true => {
-                        info!("execute: `LDRH R{rd},[R{rn},#0x{offset:X}]`");
+                        info!(
+                            "[0x{:08X}] => execute: `LDRH R{rd},[R{rn},#0x{offset:X}]`",
+                            self.get_program_counter()
+                        );
                         let val = self.read_u32(true, base) & 0xFFFF;
                         self.write_register(rd, val);
                     }
@@ -2897,7 +3032,9 @@ mod tests {
 
     #[test]
     fn arm_mov_imm() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
         cpu.set_thumb(false);
 
         // MOV R0,#0x12
@@ -2910,7 +3047,9 @@ mod tests {
     // Thumb Format1
     #[test]
     fn thumb_move_shifted_register() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let rs = 0b101;
         let rs_signed = 0x97000000;
@@ -2971,7 +3110,9 @@ mod tests {
     /// Thumb Format2
     #[test]
     fn thumb_add_subtract() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let rd = 0;
         let rs = 8;
@@ -3048,7 +3189,9 @@ mod tests {
     /// Thumb Format3
     #[test]
     fn thumb_mov_cmp_add_sub_imm() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Rd => 0, Offset => 8
         let offset = 8;
@@ -3125,12 +3268,18 @@ mod tests {
     /// Thumb Format4
     #[ignore]
     #[test]
-    fn thumb_alu() {}
+    fn thumb_alu() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
+    }
 
     /// Thumb Format5
     #[test]
     fn thumb_hi_register_op_bx() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let opcode_bx_low = 0b0100011100000000;
         let opcode_bx_high = 0b0100011101000000;
@@ -3167,7 +3316,9 @@ mod tests {
     /// Thumb Format6
     #[test]
     fn thumb_pc_relative_load() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let offset = 8;
         let opcode = 0x4800 | ((offset as u16) >> 2);
@@ -3185,7 +3336,9 @@ mod tests {
     /// Thumb Format7
     #[test]
     fn thumb_load_store_register_offset() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Rd => 0, Rb => 1, Ro => 2
         let rb = 0x03000000;
@@ -3233,7 +3386,9 @@ mod tests {
     /// Thumb Format8
     #[test]
     fn thumb_load_store_sign_extended_byte_halfword() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Rd => 0
         // Ro => 1
@@ -3283,7 +3438,9 @@ mod tests {
     /// Thumb Format9
     #[test]
     fn thumb_load_store_immediate() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let rd: u32 = 2;
         let rb: u32 = 0x02000000;
@@ -3332,7 +3489,9 @@ mod tests {
     /// Thumb Format10
     #[test]
     fn thumb_load_store_halfword() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Rd => 0, Rb => 1, Imm => 8
         let rd = 0xDEADBEEF;
@@ -3360,7 +3519,9 @@ mod tests {
     /// Thumb Format11
     #[test]
     fn thumb_sp_relative_load_store() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let rd = 0xDEADBEEF;
         let sp = 0x03000000;
@@ -3386,7 +3547,9 @@ mod tests {
     // Thumb Format12
     #[test]
     fn thumb_load_address() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // rd=0, word8=16
         let val = 16;
@@ -3417,7 +3580,9 @@ mod tests {
     /// Thumb Format13
     #[test]
     fn thumb_offset_to_sp() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let imm = 16;
         let opcode_add = 0xB000 | (imm >> 2);
@@ -3440,7 +3605,9 @@ mod tests {
     // Thumb Format14
     #[test]
     fn thumb_push_pop() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let base = 0x03000000;
 
@@ -3508,7 +3675,9 @@ mod tests {
     /// Thumb Format15
     #[test]
     fn thumb_multiple_load_store() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // STMIA/LDMIA R3!,{R0, R2}
         let rb = 0x03000000;
@@ -3544,12 +3713,18 @@ mod tests {
     /// Thumb Format17
     #[ignore]
     #[test]
-    fn thumb_swi() {}
+    fn thumb_swi() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
+    }
 
     /// Thumb Format18
     #[test]
     fn thumb_unconditional_branch() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Forward
         let offset = 8;
@@ -3572,7 +3747,9 @@ mod tests {
     /// Thumb Format19
     #[test]
     fn thumb_long_branch_link() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         // Forward
         let addr: u32 = 0x8;
@@ -3624,7 +3801,9 @@ mod tests {
     /// Tests post-increment load
     #[test]
     fn operation_ldmia() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let wb = true;
         let load = true;
@@ -3656,7 +3835,9 @@ mod tests {
     /// Tests pre-decrement store
     #[test]
     fn operation_stmdb() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let wb = true;
         let load = false;
@@ -3689,7 +3870,9 @@ mod tests {
 
     #[test]
     fn memcpy() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let src: u32 = 0x02000000;
         let dest: u32 = 0x03000000;
@@ -3702,7 +3885,9 @@ mod tests {
 
     #[test]
     fn memfill32() {
-        let mut cpu = CPU::new();
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette);
 
         let dest: u32 = 0x03000000;
         let val: u32 = 0xDEADBEEF;
