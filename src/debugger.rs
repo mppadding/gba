@@ -23,7 +23,7 @@ use tui_logger::{init_logger, TuiLoggerSmartWidget, TuiWidgetState};
 
 use crate::{
     cpu::{CPU, MMU},
-    disassembler,
+    disassembler, print_pc_backtrace,
 };
 
 pub enum ViewState {
@@ -108,7 +108,7 @@ impl Debugger {
         }
     }
 
-    pub fn draw(&mut self, cpu: &CPU) {
+    pub fn draw(&mut self, cpu: &mut CPU) {
         self.terminal
             .draw(|f| {
                 let constraints = match self.state {
@@ -198,7 +198,7 @@ impl Debugger {
             .expect("[TERM] Failed to show cursor");
     }
 
-    pub fn update(&mut self, cpu: &mut CPU) -> DebuggerEvent {
+    pub fn update(&mut self, cpu: &CPU) -> DebuggerEvent {
         while event::poll(Duration::from_secs(0)).unwrap_or(false) {
             if let Event::Key(key) = event::read().unwrap() {
                 if key.code == KeyCode::F(1) {
@@ -237,17 +237,6 @@ impl Debugger {
                                 self.reset();
                                 return DebuggerEvent::Reset;
                             }
-                            KeyCode::Char('i') => {
-                                self.lockstep = true;
-                                self.paused = true;
-                                self.free_run = false;
-                                let can_trigger = cpu.can_irq_trigger(cpu::IRQ_DEBUG1);
-                                warn!("DEBUG1 IRQ Triggered => {can_trigger}");
-
-                                if can_trigger {
-                                    cpu.trigger_irq(cpu::IRQ_DEBUG1);
-                                }
-                            }
                             _ => {
                                 warn!("Key: {:?}", key);
                             }
@@ -281,6 +270,7 @@ impl Debugger {
 
             println!("{panic_info}");
             println!("Backtrace:\n{bt}");
+            print_pc_backtrace();
         }));
     }
 }

@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::backtrace::Backtrace;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
 use std::time::Instant;
+use std::{panic, thread};
 
 use cpu::MMU;
 use debugger::Debugger;
@@ -22,25 +23,107 @@ mod renderer;
 mod serial;
 mod sound;
 
+// PC, Opcode, is_thumb
+static mut PC_BACKTRACE: VecDeque<(u32, u32, bool, String, String)> = VecDeque::new();
+
+fn print_pc_backtrace() {
+    println!("CPU Backtrace:");
+    // Accesses static mut pc_backtrace. Must be unsafe due to multiple thread access
+    unsafe {
+        let mut i = 0;
+        for (pc, opcode, thumb, asm_reg, asm) in PC_BACKTRACE.iter() {
+            match thumb {
+                false => {
+                    //let (asm, _) = disassembler::disassemble_arm(*opcode, *pc);
+                    println!("\t{i:2}: [0x{pc:08X}] => 0x{opcode:08X} => {asm_reg}")
+                }
+                true => {
+                    //let (asm, _) = disassembler::disassemble_thumb(*opcode as u16);
+                    println!("\t{i:2}: [0x{pc:08X}] =>     0x{opcode:04X} => {asm_reg}")
+                }
+            }
+            println!("\t                               => {asm}");
+            i += 1;
+        }
+    }
+}
+
+fn replace_registers_in_string(cpu: &CPU, str: &String) -> String {
+    str.replace("R0", format!("0x{:X}", cpu.read_register(0)).as_str())
+        .replace("R1", format!("0x{:X}", cpu.read_register(1)).as_str())
+        .replace("R2", format!("0x{:X}", cpu.read_register(2)).as_str())
+        .replace("R3", format!("0x{:X}", cpu.read_register(3)).as_str())
+        .replace("R4", format!("0x{:X}", cpu.read_register(4)).as_str())
+        .replace("R5", format!("0x{:X}", cpu.read_register(5)).as_str())
+        .replace("R6", format!("0x{:X}", cpu.read_register(6)).as_str())
+        .replace("R7", format!("0x{:X}", cpu.read_register(7)).as_str())
+        .replace("R8", format!("0x{:X}", cpu.read_register(8)).as_str())
+        .replace("R9", format!("0x{:X}", cpu.read_register(9)).as_str())
+        .replace("R10", format!("0x{:X}", cpu.read_register(10)).as_str())
+        .replace("R11", format!("0x{:X}", cpu.read_register(11)).as_str())
+        .replace("R12", format!("0x{:X}", cpu.read_register(12)).as_str())
+        .replace("R13", format!("0x{:X}", cpu.read_register(13)).as_str())
+        .replace("R14", format!("0x{:X}", cpu.read_register(14)).as_str())
+        .replace("R15", format!("0x{:X}", cpu.read_register(15)).as_str())
+        .replace("SP", format!("0x{:X}", cpu.read_register(13)).as_str())
+        .replace("LR", format!("0x{:X}", cpu.read_register(14)).as_str())
+        .replace("PC", format!("0x{:X}", cpu.read_register(15)).as_str())
+}
+
 fn main() {
+    panic::set_hook(Box::new(|panic_info| {
+        let bt = Backtrace::capture();
+
+        println!("{panic_info}");
+        println!("Backtrace:\n{bt}");
+        print_pc_backtrace();
+    }));
+
     let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
     let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
 
     let mut cpu = CPU::new(&vram, &palette);
     cpu.reset();
     cpu.load_bios(&std::fs::read("bios/gba_bios.bin").unwrap());
+
+    /* Games */
     //let rom = std::fs::read("roms/pokemon_emerald.gba").unwrap();
-    //let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
+    let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance2.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance4.gba").unwrap();
-    let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
+    //let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
+
+    /* Test ROMs */
     //let rom = std::fs::read("roms/rgb_test.gba").unwrap();
-    //let rom = std::fs::read("roms/tonc/bm_modes.gba").unwrap();
-    //let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
     //let rom = std::fs::read("roms/CPUTest.gba").unwrap();
 
-    //let rom = std::fs::read("roms/tonc/key_demo.gba").unwrap(); // Works
-    //let rom = std::fs::read("roms/tonc/pageflip.gba").unwrap(); // Works
+    /* TONC */
+    // BM_MODES:
+    //      - Mode 3 rendering works
+    //      - mode swap using left/right does not work -> Keys are read though & work in key_demo
+    //      - Mode 4 works
+    //      - Mode 5 works
+    //      - Wrong colors in palette?
+    //
+    //let rom = std::fs::read("roms/tonc/bm_modes.gba").unwrap();
+
+    // IRQ_DEMO:
+    //      - Crashes at 0x080063C0
+    let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
+
+    //let rom = std::fs::read("roms/tonc/txt_bm.gba").unwrap();
+
+    // M3_DEMO:
+    //      - Missing cyan box around top right rectangle.
+    //      - Missing purple lines in top right of top right rectangle
+    //      - Missing yellow box around bottom left rectangle.
+    //      - Missing cyan lines in bottom left rectangle
+    //      - Missing black border in center rectangle
+    //let rom = std::fs::read("roms/tonc/m3_demo.gba").unwrap();
+
+    /* Working ROMs */
+    //let rom = std::fs::read("roms/tonc/key_demo.gba").unwrap();
+    let rom = std::fs::read("roms/tonc/pageflip.gba").unwrap();
 
     cpu.load_rom(&rom.clone());
 
@@ -50,7 +133,9 @@ fn main() {
         //0x00000000, 0x13c, 0x080002e0,
         //0x080016BC
         // 0x03000188,
-        //0x08000492,
+        //0x080026a4,
+        0x0801b2d6, // BL to function
+        0x08050b18, // Return from function
     ]);
 
     let (win_tx, win_rx) = mpsc::channel();
@@ -75,7 +160,7 @@ fn main() {
         }
     });
 
-    dbg.draw(&cpu);
+    dbg.draw(&mut cpu);
 
     let start = Instant::now();
 
@@ -141,15 +226,15 @@ fn main() {
                     WindowEvent::Quit => break 'running,
                     WindowEvent::ButtonPress(button) => {
                         cpu.keypad.press(button);
-                        println!(
-                            "Press {button}, buttons:{:010b}",
+                        warn!(
+                            "Press 0x{button:X}, buttons:{:010b}",
                             cpu.keypad.keyinput & 0x3FF
                         );
                     }
                     WindowEvent::ButtonRelease(button) => {
                         cpu.keypad.release(button);
-                        println!(
-                            "Release {button}, buttons:{:010b}",
+                        warn!(
+                            "Release 0x{button:X}, buttons:{:010b}",
                             cpu.keypad.keyinput & 0x3FF
                         );
                     }
@@ -166,6 +251,21 @@ fn main() {
             }
 
             if !cpu.halt || (cpu.halt && cpu.get_mode() == cpu::MODE_IRQ) {
+                let (asm, _) = match is_thumb {
+                    false => disassembler::disassemble_arm(opcode, program_counter),
+                    true => disassembler::disassemble_thumb(opcode as u16),
+                };
+                let asm_reg = replace_registers_in_string(&cpu, &asm);
+
+                // Unsafe due to static mut PC_BACKTRACE
+                unsafe {
+                    if PC_BACKTRACE.len() == 32 {
+                        PC_BACKTRACE.pop_back();
+                    }
+
+                    PC_BACKTRACE.push_front((program_counter, opcode, is_thumb, asm, asm_reg));
+                }
+
                 let cycles = cpu.cycle_count;
                 cpu.execute(opcode);
 
