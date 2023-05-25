@@ -1201,6 +1201,38 @@ impl CPU {
         self.syscall_intr_wait();
     }
 
+    // SWI 0x06
+    fn syscall_div(&mut self) {
+        let number = self.read_register(0) as i32;
+        let div = self.read_register(1) as i32;
+
+        info!("HLE: executing syscall `Div` with `{number}/{div}`");
+
+        let res_div = number / div;
+        let res_mod = number % div;
+        let res_abs = res_div.abs();
+
+        self.write_register(0, res_div as u32);
+        self.write_register(1, res_mod as u32);
+        self.write_register(2, res_abs as u32);
+    }
+
+    // SWI 0x07
+    fn syscall_div_arm(&mut self) {
+        let div = self.read_register(0) as i32;
+        let number = self.read_register(1) as i32;
+
+        info!("HLE: executing syscall `DivArm` with `{number}/{div}`");
+
+        let res_div = number / div;
+        let res_mod = number % div;
+        let res_abs = res_div.abs();
+
+        self.write_register(0, res_div as u32);
+        self.write_register(1, res_mod as u32);
+        self.write_register(2, res_abs as u32);
+    }
+
     // SWI 0x0B
     fn syscall_cpu_set(&mut self) {
         let rs_val = self.read_register(0);
@@ -1272,6 +1304,8 @@ impl CPU {
             0x02 => self.syscall_halt(),
             0x04 => self.syscall_intr_wait(),
             0x05 => self.syscall_vblank_intr_wait(),
+            0x06 => self.syscall_div(),
+            0x07 => self.syscall_div_arm(),
             0x0B => self.syscall_cpu_set(),
             0x0C => self.syscall_cpu_fast_set(),
             _ => panic!("Unknown BIOS syscall `{:02X}h`", syscall),
@@ -3061,7 +3095,8 @@ mod tests {
     fn arm_mov_imm() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
         cpu.set_thumb(false);
 
         // MOV R0,#0x12
@@ -3076,7 +3111,8 @@ mod tests {
     fn thumb_move_shifted_register() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let rs = 0b101;
         let rs_signed = 0x97000000;
@@ -3139,7 +3175,8 @@ mod tests {
     fn thumb_add_subtract() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let rd = 0;
         let rs = 8;
@@ -3218,7 +3255,8 @@ mod tests {
     fn thumb_mov_cmp_add_sub_imm() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Rd => 0, Offset => 8
         let offset = 8;
@@ -3298,7 +3336,8 @@ mod tests {
     fn thumb_alu() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
     }
 
     /// Thumb Format5
@@ -3306,7 +3345,8 @@ mod tests {
     fn thumb_hi_register_op_bx() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let opcode_bx_low = 0b0100011100000000;
         let opcode_bx_high = 0b0100011101000000;
@@ -3345,7 +3385,8 @@ mod tests {
     fn thumb_pc_relative_load() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let offset = 8;
         let opcode = 0x4800 | ((offset as u16) >> 2);
@@ -3365,7 +3406,8 @@ mod tests {
     fn thumb_load_store_register_offset() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Rd => 0, Rb => 1, Ro => 2
         let rb = 0x03000000;
@@ -3415,7 +3457,8 @@ mod tests {
     fn thumb_load_store_sign_extended_byte_halfword() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Rd => 0
         // Ro => 1
@@ -3467,7 +3510,8 @@ mod tests {
     fn thumb_load_store_immediate() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let rd: u32 = 2;
         let rb: u32 = 0x02000000;
@@ -3518,7 +3562,8 @@ mod tests {
     fn thumb_load_store_halfword() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Rd => 0, Rb => 1, Imm => 8
         let rd = 0xDEADBEEF;
@@ -3548,7 +3593,8 @@ mod tests {
     fn thumb_sp_relative_load_store() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let rd = 0xDEADBEEF;
         let sp = 0x03000000;
@@ -3576,7 +3622,8 @@ mod tests {
     fn thumb_load_address() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // rd=0, word8=16
         let val = 16;
@@ -3609,7 +3656,8 @@ mod tests {
     fn thumb_offset_to_sp() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let imm = 16;
         let opcode_add = 0xB000 | (imm >> 2);
@@ -3634,7 +3682,8 @@ mod tests {
     fn thumb_push_pop() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let base = 0x03000000;
 
@@ -3704,7 +3753,8 @@ mod tests {
     fn thumb_multiple_load_store() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // STMIA/LDMIA R3!,{R0, R2}
         let rb = 0x03000000;
@@ -3733,9 +3783,43 @@ mod tests {
     }
 
     /// Thumb Format16
-    #[ignore]
     #[test]
-    fn thumb_conditional_branch() {}
+    fn thumb_conditional_branch() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+        cpu.set_thumb(true);
+
+        let opcode_bne = 0xD1FC;
+        let pc = 0x08000194;
+
+        // Take negative
+        cpu.set_flag_z(false);
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode_bne);
+        assert_eq!(cpu.get_program_counter(), pc - 8 + 4);
+
+        // Skip negative
+        cpu.set_flag_z(true);
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode_bne);
+        assert_eq!(cpu.get_program_counter(), pc + 2);
+
+        let opcode_bne = 0xD104;
+
+        // Take positive
+        cpu.set_flag_z(false);
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode_bne);
+        assert_eq!(cpu.get_program_counter(), pc + 8 + 4);
+
+        // Skip positive
+        cpu.set_flag_z(true);
+        cpu.set_program_counter(pc);
+        cpu.execute_thumb(opcode_bne);
+        assert_eq!(cpu.get_program_counter(), pc + 2);
+    }
 
     /// Thumb Format17
     #[ignore]
@@ -3743,7 +3827,8 @@ mod tests {
     fn thumb_swi() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
     }
 
     /// Thumb Format18
@@ -3751,7 +3836,8 @@ mod tests {
     fn thumb_unconditional_branch() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Forward
         let offset = 8;
@@ -3776,7 +3862,8 @@ mod tests {
     fn thumb_long_branch_link() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // Forward
         let addr: u32 = 0x8;
@@ -3830,7 +3917,8 @@ mod tests {
     fn operation_ldmia() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let wb = true;
         let load = true;
@@ -3864,7 +3952,8 @@ mod tests {
     fn operation_stmdb() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let wb = true;
         let load = false;
@@ -3896,10 +3985,26 @@ mod tests {
     }
 
     #[test]
+    fn syscall_div() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        cpu.write_register(0, (-1234 as i32) as u32);
+        cpu.write_register(1, (10 as i32) as u32);
+        cpu.syscall_div();
+        assert_eq!(cpu.read_register(0) as i32, -123);
+        assert_eq!(cpu.read_register(1) as i32, -4);
+        assert_eq!(cpu.read_register(2), 123);
+    }
+
+    #[test]
     fn memcpy() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let src: u32 = 0x02000000;
         let dest: u32 = 0x03000000;
@@ -3914,7 +4019,8 @@ mod tests {
     fn memfill32() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
-        let mut cpu = CPU::new(&vram, &palette);
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
 
         let dest: u32 = 0x03000000;
         let val: u32 = 0xDEADBEEF;
@@ -3923,5 +4029,62 @@ mod tests {
         assert!(cpu.read_u32(false, dest) == val);
         assert!(cpu.read_u32(false, dest + 4) == val);
         assert!(cpu.read_u32(false, dest + 8) != val);
+    }
+
+    /// Halt runs until an enabled interrupt is triggered
+    #[test]
+    fn syscall_halt() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        // Enable VBlank interrupt
+        cpu.io_ie |= IRQ_VBLANK;
+
+        // Enable VBlank, HBlank irq in LCD
+        cpu.lcd.set_dispstat(0x0018);
+
+        cpu.syscall_halt();
+        assert!(cpu.halt);
+
+        assert!(!cpu.can_irq_trigger(IRQ_HBLANK));
+        assert!(cpu.can_irq_trigger(IRQ_VBLANK));
+
+        cpu.trigger_irq(IRQ_VBLANK);
+        assert!(!cpu.halt);
+    }
+
+    /// Halt runs until an eanbled interrupt is triggered
+    #[test]
+    fn syscall_vblank_intr_wait() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        assert!(!cpu.can_irq_trigger(IRQ_HBLANK));
+        assert!(!cpu.can_irq_trigger(IRQ_VBLANK));
+
+        // Enable VBlank interrupt
+        cpu.io_ie |= IRQ_VBLANK;
+
+        assert!(!cpu.can_irq_trigger(IRQ_HBLANK));
+        assert!(!cpu.can_irq_trigger(IRQ_VBLANK));
+
+        // Enable VBlank, HBlank irq in LCD
+        cpu.lcd.set_dispstat(0x0018);
+
+        assert!(!cpu.can_irq_trigger(IRQ_HBLANK));
+        assert!(!cpu.can_irq_trigger(IRQ_VBLANK));
+
+        cpu.syscall_vblank_intr_wait();
+        assert!(cpu.halt);
+
+        assert!(!cpu.can_irq_trigger(IRQ_HBLANK));
+        assert!(cpu.can_irq_trigger(IRQ_VBLANK));
+
+        cpu.trigger_irq(IRQ_VBLANK);
+        assert!(!cpu.halt);
     }
 }
