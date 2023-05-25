@@ -237,7 +237,7 @@ pub fn draw_texture(
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
                     for y in 0..160 {
                         for x in 0..240 {
-                            let offset = y * pitch + x * 3;
+                            let offset = y * pitch + x * 4;
 
                             buffer[offset] = 0xFF;
                             buffer[offset + 1] = 0x00;
@@ -253,7 +253,7 @@ pub fn draw_texture(
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
                     for y in 0..160 {
                         for x in 0..240 {
-                            let offset = y * pitch + x * 3;
+                            let offset = y * pitch + x * 4;
                             let addr = ((x + (y * 240)) * 2) as usize;
                             let pixel = ((vram[addr + 1] as u16) << 8) | vram[addr] as u16;
 
@@ -278,7 +278,7 @@ pub fn draw_texture(
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
                     for y in 0..160 {
                         for x in 0..240 {
-                            let offset = y * pitch + x * 3;
+                            let offset = y * pitch + x * 4;
 
                             let addr = base + (x + (y * 240));
                             let pixel = vram[addr];
@@ -304,7 +304,7 @@ pub fn draw_texture(
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
                     for y in 0..160 {
                         for x in 0..240 {
-                            let offset = y * pitch + x * 3;
+                            let offset = y * pitch + x * 4;
 
                             if y < 128 && x < 160 {
                                 let addr = base + ((x + (y * 160)) * 2) as usize;
