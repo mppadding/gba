@@ -338,6 +338,10 @@ fn main() {
                 cpu.trigger_irq(cpu::IRQ_HBLANK);
             }
         }
+
+        if dbg.lockstep && !dbg.free_run {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     let end = Instant::now();
