@@ -202,7 +202,33 @@ fn main() {
                     }
                     WindowEvent::Pause(paused) => lcd_pause = paused,
                     WindowEvent::NextVCount => timer_scanline = 1232,
-                    _ => {}
+                    WindowEvent::Debug(1) => {
+                        dbg.free_run = false;
+                        dbg.paused = true;
+                        dbg.lockstep = true;
+
+                        warn!("Debug(1) pressed, trigger IRQ_VBLANK");
+                        cpu.trigger_irq(cpu::IRQ_VBLANK);
+                    }
+                    WindowEvent::Debug(2) => {
+                        dbg.free_run = false;
+                        dbg.paused = true;
+                        dbg.lockstep = true;
+
+                        warn!("Debug(2) pressed, trigger IRQ_HBLANK");
+                        cpu.trigger_irq(cpu::IRQ_HBLANK);
+                    }
+                    WindowEvent::Debug(3) => {
+                        dbg.free_run = false;
+                        dbg.paused = true;
+                        dbg.lockstep = true;
+
+                        warn!("Debug(3) pressed, trigger IRQ_VCOUNT");
+                        cpu.trigger_irq(cpu::IRQ_VCOUNT);
+                    }
+                    _ => {
+                        warn!("Unhandled WindowEvent `{event:#?}`");
+                    }
                 }
             }
         }

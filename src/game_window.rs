@@ -27,6 +27,7 @@ pub enum WindowEvent {
     ButtonRelease(u16),
     Pause(bool),
     NextVCount,
+    Debug(u8),
 }
 
 impl GameWindow {
@@ -125,6 +126,9 @@ impl GameWindow {
                         events.push(WindowEvent::Pause(self.paused));
                     }
                     Keycode::N => events.push(WindowEvent::NextVCount),
+                    Keycode::F1 => events.push(WindowEvent::Debug(1)),
+                    Keycode::F2 => events.push(WindowEvent::Debug(2)),
+                    Keycode::F3 => events.push(WindowEvent::Debug(3)),
                     _ => {}
                 },
                 Event::KeyUp {
