@@ -69,7 +69,7 @@ impl GameWindow {
         self.canvas.clear();
         let mut texture = self
             .texture_creator
-            .create_texture_streaming(PixelFormatEnum::RGB24, 240, 160)
+            .create_texture_streaming(PixelFormatEnum::BGRA8888, 240, 160)
             .map_err(|e| e.to_string())
             .expect("[SDL] Cannot create texture");
 

@@ -298,6 +298,8 @@ fn main() {
                     .send(RenderMessage {
                         mode: cpu.lcd.get_dispcnt_mode(),
                         frame: cpu.lcd.get_dispcnt_frame(),
+                        bg_control: cpu.lcd.get_background_control(0),
+                        bg_offset: cpu.lcd.get_background_offset(0),
                     })
                     .unwrap();
             } else if vcount == 160 {
