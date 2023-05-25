@@ -282,12 +282,16 @@ impl MMU for CPU {
                         warn!("Read32 from Sound IO `{:08X}`", addr);
                         0
                     }
-                    0xB0..=0xDE => {
+                    0xB0..=0xDC => {
                         let offset = (io_addr - 0xB0) as usize;
                         ((self.dma[offset + 3] as u32) << 24)
                             | ((self.dma[offset + 2] as u32) << 16)
                             | ((self.dma[offset + 1] as u32) << 8)
                             | (self.dma[offset] as u32)
+                    }
+                    0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        ((self.dma[offset + 1] as u32) << 8) | (self.dma[offset] as u32)
                     }
                     // Timers
                     0x100..=0x10E => {
@@ -297,11 +301,15 @@ impl MMU for CPU {
                             | ((self.timers[offset + 1] as u32) << 8)
                             | (self.timers[offset] as u32)
                     }
+                    0x120..=0x12A => self.serial.read_u32(io_addr),
                     // Keypad
-                    0x130 => self.keypad.keyinput as u32,
+                    0x130 => {
+                        warn!("Reading from keyinput: {:010b}", self.keypad.keyinput);
+                        self.keypad.keyinput as u32
+                    }
                     0x132 => self.keypad.keycnt as u32,
                     // Serial (2)
-                    0x134 => self.serial.rcnt as u32,
+                    0x134..=0x158 => self.serial.read_u32(io_addr),
                     0x200 => {
                         let ie_bytes = self.io_ie.to_le_bytes();
                         let if_bytes = self.io_if.to_le_bytes();
@@ -394,6 +402,7 @@ impl MMU for CPU {
                 let io_addr = addr & 0x3FF;
 
                 match io_addr {
+                    0x00..=0x55 => self.lcd.registers[io_addr] = val,
                     0x60..=0xA7 => {
                         warn!("Write8 to Sound IO `{:08X}` => {:02X}", addr, val);
                     }
@@ -401,6 +410,8 @@ impl MMU for CPU {
                         let offset = (io_addr - 0xB0) as usize;
                         self.dma[offset] = val;
                     }
+                    0x120..=0x12B => self.serial.write_u8(io_addr, val),
+                    0x134..=0x159 => self.serial.write_u8(io_addr, val),
                     0x208 => self.io_ime = val,
                     _ => {
                         if intern {
@@ -505,12 +516,17 @@ impl MMU for CPU {
                     0x60..=0xA4 => {
                         warn!("Write32 to Sound IO `{:08X}` => {:08X}", addr, val);
                     }
-                    0xB0..=0xDE => {
+                    0xB0..=0xDC => {
                         let offset = (io_addr - 0xB0) as usize;
                         self.dma[offset + 3] = ((val >> 24) & 0xFF) as u8;
                         self.dma[offset + 2] = ((val >> 16) & 0xFF) as u8;
                         self.dma[offset + 1] = ((val >> 8) & 0xFF) as u8;
-                        self.dma[offset] = (val & 0xFF) as u8;
+                        self.dma[offset + 0] = ((val >> 0) & 0xFF) as u8;
+                    }
+                    0xDE => {
+                        let offset = (io_addr - 0xB0) as usize;
+                        self.dma[offset + 1] = ((val >> 8) & 0xFF) as u8;
+                        self.dma[offset + 0] = ((val >> 0) & 0xFF) as u8;
                     }
                     // Timers
                     0x100..=0x10E => {
@@ -521,7 +537,8 @@ impl MMU for CPU {
                         self.timers[offset] = b0;
                     }
                     // Serial (2)
-                    0x134 => self.serial.rcnt = (val & 0xFFFF) as u16,
+                    0x120..=0x12A => self.serial.write_u32(io_addr, val),
+                    0x134..=0x158 => self.serial.write_u32(io_addr, val),
                     0x200 => {
                         self.io_ie = (val & 0xFFFF) as u16;
                         warn!(
