@@ -21,6 +21,15 @@ pub struct GameWindow {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Dump {
+    Video,
+    RAM,
+    Palette,
+    Object,
+    Full,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum WindowEvent {
     Quit,
     ButtonPress(u16),
@@ -28,6 +37,8 @@ pub enum WindowEvent {
     Pause(bool),
     NextVCount,
     Debug(u8),
+    Dump(Dump),
+    ForceRender,
 }
 
 impl GameWindow {
@@ -126,9 +137,11 @@ impl GameWindow {
                         events.push(WindowEvent::Pause(self.paused));
                     }
                     Keycode::N => events.push(WindowEvent::NextVCount),
+                    Keycode::R => events.push(WindowEvent::ForceRender),
                     Keycode::F1 => events.push(WindowEvent::Debug(1)),
                     Keycode::F2 => events.push(WindowEvent::Debug(2)),
                     Keycode::F3 => events.push(WindowEvent::Debug(3)),
+                    Keycode::V => events.push(WindowEvent::Dump(Dump::Video)),
                     _ => {}
                 },
                 Event::KeyUp {

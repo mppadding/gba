@@ -1,5 +1,8 @@
 use std::backtrace::Backtrace;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
+use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 use std::{panic, thread};
@@ -12,7 +15,7 @@ use crate::backtrace::print_cpu_backtrace;
 use crate::backtrace::PC_BACKTRACE;
 use crate::cpu::CPU;
 use crate::debugger::DebuggerEvent;
-use crate::game_window::{GameWindow, WindowEvent};
+use crate::game_window::{Dump, GameWindow, WindowEvent};
 use crate::renderer::RenderMessage;
 
 mod backtrace;
@@ -207,6 +210,10 @@ fn main() {
                     }
                     WindowEvent::Pause(paused) => lcd_pause = paused,
                     WindowEvent::NextVCount => timer_scanline = 1232,
+                    WindowEvent::ForceRender => {
+                        timer_scanline = 1232;
+                        cpu.lcd.set_vcount(227);
+                    }
                     WindowEvent::Debug(1) => {
                         dbg.free_run = false;
                         dbg.paused = true;
@@ -227,9 +234,22 @@ fn main() {
                         dbg.free_run = false;
                         dbg.paused = true;
                         dbg.lockstep = true;
+                    }
+                    WindowEvent::Dump(Dump::Video) => {
+                        println!("Dump VRAM");
+                        let mut file =
+                            File::create("dump/vram").expect("Could not create `dump/vram`");
 
-                        warn!("Debug(3) pressed, trigger IRQ_VCOUNT");
-                        cpu.trigger_irq(cpu::IRQ_VCOUNT);
+                        let vram = cpu.ram_video.lock().unwrap();
+
+                        file.write_all(&vram)
+                            .expect("Failed to write to `dump/vram`");
+
+                        Command::new("sh")
+                            .arg("-c")
+                            .arg("xxd dump/vram >| dump/vram.hex")
+                            .output()
+                            .expect("Failed to execute xxd");
                     }
                     _ => {
                         warn!("Unhandled WindowEvent `{event:#?}`");
