@@ -1717,11 +1717,12 @@ impl CPU {
         match (sign_extended, h_flag) {
             (false, false) => {
                 let val = self.read_register(rd) & 0xFFFF;
+                let addr_val = self.read_u32(true, addr);
                 info!(
                     "[0x{:08X}] => execute: `STRH R{},[R{},R{}]`, [0x{:08X}] => 0x{:X}",
                     self.registers[15], rd, rb, ro, addr, val
                 );
-                self.write_u32(true, addr, val);
+                self.write_u32(true, addr, (addr_val & 0xFFFF0000) | val);
             }
             (false, true) => {
                 let val = self.read_u16(true, addr);
