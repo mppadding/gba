@@ -133,6 +133,7 @@ fn main() {
     let mut timer_scanline: usize = 0;
     let mut dt_cycles: usize = 0;
     let mut lcd_pause = false;
+    let mut previous_pc = 0x08000000;
 
     'running: loop {
         let is_thumb = cpu.is_thumb();
@@ -179,6 +180,10 @@ fn main() {
                 warn!("CPU Reset");
                 cpu.load_rom(&rom.clone());
                 cpu.reset();
+            }
+            DebuggerEvent::Back => {
+                warn!("Jumping 1 instruction back");
+                cpu.set_program_counter(previous_pc);
             }
         }
 
@@ -260,6 +265,8 @@ fn main() {
                         PC_BACKTRACE.push_front((program_counter, opcode, is_thumb, asm, asm_reg));
                     }
                 }
+
+                previous_pc = program_counter;
 
                 let cycles = cpu.cycle_count;
                 cpu.execute(opcode);

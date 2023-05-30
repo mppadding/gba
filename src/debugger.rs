@@ -37,6 +37,7 @@ pub enum DebuggerEvent {
     None,
     Quit,
     Reset,
+    Back,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -236,6 +237,9 @@ impl Debugger {
                             KeyCode::Char('r') => {
                                 self.reset();
                                 return DebuggerEvent::Reset;
+                            }
+                            KeyCode::Backspace => {
+                                return DebuggerEvent::Back;
                             }
                             _ => {
                                 warn!("Key: {:?}", key);
