@@ -22,7 +22,26 @@ pub fn disassemble_arm(opcode: u32, pc: u32) -> (String, String) {
     match instr {
         0x00..=0x3F => {
             if CPU::opcode_match(opcode, ARM_MASK_MUL_CLR, ARM_MASK_MUL_SET) {
-                ("Multiply".to_string(), "???".to_string())
+                let rm = (opcode & 0xF) as u8;
+                let rs = ((opcode >> 8) & 0xF) as u8;
+                let rn = ((opcode >> 12) & 0xF) as u8;
+                let rd = ((opcode >> 16) & 0xF) as u8;
+
+                let set_condition = (opcode & 0x100000) != 0;
+                let accumulate = (opcode & 0x200000) != 0;
+
+                let s_str = match set_condition {
+                    false => "",
+                    true => "S",
+                };
+
+                (
+                    match accumulate {
+                        false => format!("MUL{s_str} R{rd},R{rm},R{rs}"),
+                        true => format!("MLA{s_str} R{rd},R{rm},R{rs},R{rn}"),
+                    },
+                    "COND ---- --AS Rd__ Rn__ Rs__ ---- Rm__".to_string(),
+                )
             } else if CPU::opcode_match(opcode, ARM_MASK_MUL_LONG_CLR, ARM_MASK_MUL_LONG_SET) {
                 ("Multiply Long".to_string(), "???".to_string())
             } else if CPU::opcode_match(opcode, ARM_MASK_SNGL_SWP_CLR, ARM_MASK_SNGL_SWP_SET) {

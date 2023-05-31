@@ -3031,6 +3031,49 @@ impl CPU {
         (opcode & mask_set == mask_set) && ((!opcode) & mask_clr == mask_clr)
     }
 
+    fn arm_multiply(&mut self, opcode: u32) {
+        let rm = (opcode & 0xF) as u8;
+        let rs = ((opcode >> 8) & 0xF) as u8;
+        let rn = ((opcode >> 12) & 0xF) as u8;
+        let rd = ((opcode >> 16) & 0xF) as u8;
+
+        let set_condition = (opcode & 0x100000) != 0;
+        let accumulate = (opcode & 0x200000) != 0;
+
+        let rm_val = self.read_register(rm);
+        let rs_val = self.read_register(rs);
+        let rn_val = self.read_register(rn);
+
+        let result = match accumulate {
+            false => rm_val.wrapping_mul(rs_val),
+            true => rm_val.wrapping_mul(rs_val).wrapping_add(rn_val),
+        };
+
+        self.write_register(rd, result);
+
+        if set_condition {
+            self.set_flag_n((result as i32) < 0);
+            self.set_flag_z(result == 0);
+        }
+
+        self.step_program_counter(4);
+        let rs_sign = rs_val as i32;
+        let m_cycles = if -(1 << 8) <= rs_sign && rs_sign < (1 << 8) {
+            1
+        } else if -(1 << 16) <= rs_sign && rs_sign < (1 << 16) {
+            2
+        } else if -(1 << 24) <= rs_sign && rs_sign < (1 << 24) {
+            3
+        } else {
+            4
+        };
+
+        self.cycle_count += match accumulate {
+            false => 1 + m_cycles,
+            true => 2 + m_cycles,
+        };
+    }
+
     fn execute_arm(&mut self, opcode: u32) {
         let instr = ((opcode >> 20) & 0xFF) as u8;
         let cond = ((opcode >> 28) & 0xF) as u8;
@@ -3047,7 +3090,7 @@ impl CPU {
         match instr {
             0x00..=0x3F => {
                 if Self::opcode_match(opcode, ARM_MASK_MUL_CLR, ARM_MASK_MUL_SET) {
-                    todo!("Multiply");
+                    self.arm_multiply(opcode);
                 } else if Self::opcode_match(opcode, ARM_MASK_MUL_LONG_CLR, ARM_MASK_MUL_LONG_SET) {
                     todo!("Multiply Long");
                 } else if Self::opcode_match(opcode, ARM_MASK_SNGL_SWP_CLR, ARM_MASK_SNGL_SWP_SET) {
@@ -4236,5 +4279,44 @@ mod tests {
 
         cpu.trigger_irq(IRQ_VBLANK);
         assert!(!cpu.halt);
+    }
+    #[test]
+    fn arm_multiply() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        let rd = 0;
+        let rm = 1;
+        let rs = 2;
+        let rn = 3;
+
+        let opcode_mul = 0xE0100090
+            | ((rd as u32) << 16)
+            | ((rn as u32) << 12)
+            | ((rs as u32) << 8)
+            | (rm as u32);
+        let opcode_mla = 0xE0300090
+            | ((rd as u32) << 16)
+            | ((rn as u32) << 12)
+            | ((rs as u32) << 8)
+            | (rm as u32);
+
+        // MUL Rd, Rm, Rs (-10 * 20 => -200)
+        cpu.write_register(rd, 0);
+        cpu.write_register(rm, 0xFFFFFFF6);
+        cpu.write_register(rs, 0x00000014);
+        cpu.write_register(rn, 1);
+        cpu.execute_arm(opcode_mul);
+        assert_eq!(cpu.read_register(rd), 0xFFFFFF38);
+
+        // MLA Rd, Rm, Rs, Rn (-10 * 20 + 1 => -199);
+        cpu.write_register(rd, 0);
+        cpu.write_register(rm, 0xFFFFFFF6);
+        cpu.write_register(rs, 0x00000014);
+        cpu.write_register(rn, 1);
+        cpu.execute_arm(opcode_mla);
+        assert_eq!(cpu.read_register(rd), 0xFFFFFF39);
     }
 }
