@@ -1506,6 +1506,7 @@ impl CPU {
                 );
                 self.alu(ALU_RSB, rs_val, 0)
             } // NEG
+            ALU_TST => self.alu_tst(rd_val, rs_val),
             0xD => {
                 info!(
                     "[0x{:08X}] => execute: `MUL R{},R{}`",
@@ -2145,12 +2146,42 @@ impl CPU {
     /// Performs ALU operation
     /// Returns (result, N, Z, C, V)
     fn alu(&mut self, op: u8, operand1: u32, operand2: u32) -> (u32, bool, bool, bool, bool) {
+        let op1_is_neg = (operand1 as i32) < 0;
+        let op2_is_neg = (operand2 as i32) < 0;
+
+        match op {
+            ALU_TST => return self.alu_tst(operand1, operand2),
+            ALU_CMP => {
+                let (result, carry) = operand1.overflowing_sub(operand2);
+                let signed = result as i32;
+                return (
+                    result,
+                    signed < 0,
+                    signed == 0,
+                    !carry,
+                    (op1_is_neg != op2_is_neg) && (op2_is_neg == (signed < 0)),
+                );
+            }
+            ALU_CMN => {
+                let (result, carry) = operand1.overflowing_add(operand2);
+                let signed = result as i32;
+                return (
+                    result,
+                    signed < 0,
+                    signed == 0,
+                    carry,
+                    (op1_is_neg == op2_is_neg) && (op2_is_neg != (signed < 0)),
+                );
+            }
+            _ => {}
+        }
+
         let (result, carry, overflow) = match op {
             ALU_AND | ALU_TST => {
                 if op == 0x0 {
                     //info!("ALU: `AND #{}, #{}`", operand1, operand2);
                 } else {
-                    //info!("ALU: `TST #{}, #{}`", operand1, operand2);
+                    //println!("ALU: `TST #{}, #{}`", operand1, operand2);
                 }
                 (operand1 & operand2, false, false)
             }
@@ -2169,14 +2200,14 @@ impl CPU {
                     //info!("ALU: `CMP #{}, #{}`", operand1, operand2);
                 }
                 let (result, carry) = operand1.overflowing_sub(operand2);
-                let overflow = (operand1 ^ result) & 0x80000000 > 0;
-                (result, carry, overflow)
+                let overflow = (operand1 & 0x80000000) != (result & 0x80000000);
+                (result, !carry, overflow)
             }
             ALU_RSB => {
                 //info!("ALU: `RSB #{}, #{}`", operand1, operand2);
                 let (result, carry) = operand2.overflowing_sub(operand1);
                 let overflow = (operand2 ^ result) & 0x80000000 > 0;
-                (result, carry, overflow)
+                (result, !carry, overflow)
             }
             ALU_ADD | ALU_CMN => {
                 if op == 0x4 {
@@ -2251,9 +2282,21 @@ impl CPU {
             _ => unreachable!(),
         };
 
-        let negative = (result & 0x80000000) != 0;
+        let negative = (result as i32) < 0;
         let zero = result == 0;
         (result, negative, zero, carry, overflow)
+    }
+
+    /// Returns (n, z)
+    fn alu_tst(&mut self, operand1: u32, operand2: u32) -> (u32, bool, bool, bool, bool) {
+        let result = operand1 & operand2;
+
+        let n = (result as i32) < 0;
+        let z = result == 0;
+        let c = self.get_flag_c();
+        let v = self.get_flag_v();
+
+        (result, n, z, c, v)
     }
 
     fn execute_thumb(&mut self, opcode: u16) {
@@ -3339,6 +3382,112 @@ mod tests {
         let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
         let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
         let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        // TST R0, R1 (equal)
+        let opcode_tst_equal = 0b0100_00_1000_001_000;
+        cpu.write_register(0, 0x10);
+        cpu.write_register(1, 0x10);
+        cpu.thumb_alu(opcode_tst_equal);
+        assert!(!cpu.get_flag_n());
+        assert!(cpu.get_flag_z());
+        assert!(!cpu.get_flag_c());
+        assert!(!cpu.get_flag_v());
+    }
+
+    #[test]
+    fn alu() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        // TST
+        let (_, n, z, _, _) = cpu.alu(ALU_TST, 0x10, 0x10);
+        assert!(!n);
+        assert!(!z);
+
+        let (_, n, z, _, _) = cpu.alu(ALU_TST, 0x10, 0x20);
+        assert!(!n);
+        assert!(z);
+
+        let (_, n, z, _, _) = cpu.alu(ALU_TST, 0x30, 0x10);
+        assert!(!n);
+        assert!(!z);
+
+        // TODO: TEQ
+        let (_, n, z, _, _) = cpu.alu(ALU_TEQ, 0x10, 0x10);
+        assert!(!n);
+        assert!(z);
+
+        let (_, n, z, _, _) = cpu.alu(ALU_TEQ, 0x10, 0x20);
+        assert!(!n);
+        assert!(!z);
+
+        let (_, n, z, _, _) = cpu.alu(ALU_TEQ, 0x10, 0x30);
+        assert!(!n);
+        assert!(!z);
+
+        // CMP
+        let (_, n, z, c, v) = cpu.alu(ALU_CMP, 5, 10);
+        assert!(n);
+        assert!(!z);
+        assert!(!c);
+        assert!(!v);
+
+        let (_, n, z, c, v) = cpu.alu(ALU_CMP, 10, 5);
+        assert!(!n);
+        assert!(!z);
+        assert!(c);
+        assert!(!v);
+
+        let (_, n, z, c, v) = cpu.alu(ALU_CMP, 5, 5);
+        assert!(!n);
+        assert!(z);
+        assert!(c);
+        assert!(!v);
+
+        // CMN
+        let (_, n, z, c, v) = cpu.alu(ALU_CMN, 5, 10);
+        assert!(!n);
+        assert!(!z);
+        assert!(!c);
+        assert!(!v);
+
+        let (_, n, z, c, v) = cpu.alu(ALU_CMN, 10, 5);
+        assert!(!n);
+        assert!(!z);
+        assert!(!c);
+        assert!(!v);
+
+        let (_, n, z, c, v) = cpu.alu(ALU_CMN, 5, 5);
+        assert!(!n);
+        assert!(!z);
+        assert!(!c);
+        assert!(!v);
+
+        let op1 = -5;
+        let (_, n, z, c, v) = cpu.alu(ALU_CMN, op1 as u32, 5);
+        assert!(!n);
+        assert!(z);
+        assert!(c);
+        assert!(!v);
+
+        let op1 = -5;
+        let (_, n, z, c, v) = cpu.alu(ALU_CMN, op1 as u32, op1 as u32);
+        assert!(n);
+        assert!(!z);
+        assert!(c);
+        assert!(!v);
+
+        cpu.set_flag_n(true);
+        cpu.set_flag_z(true);
+        cpu.set_flag_c(true);
+        cpu.set_flag_v(true);
+        let (_, n, z, c, v) = cpu.alu(ALU_CMP, 0x3E, 0x00);
+        assert!(!n);
+        assert!(!z);
+        assert!(c);
+        assert!(!v);
     }
 
     /// Thumb Format5
