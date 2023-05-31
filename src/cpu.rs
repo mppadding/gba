@@ -479,7 +479,11 @@ impl MMU for CPU {
                 self.ram_work1[offset] = b0;
             }
             0x03007FF8 => {
-                todo!("Implement custom halt clearing on flag trigger in IFBIOS");
+                let mask = (val & 0xFFFF) as u16;
+                self.io_bios_if &= !mask;
+                if intern {
+                    warn!("Clearing flags={mask:04X} in BIOS_IF");
+                }
             }
             0x03000000..=0x03007FFF => {
                 self.ram_work2[offset + 3] = b3;
