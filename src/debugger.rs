@@ -1,6 +1,6 @@
 use std::{
     backtrace::Backtrace,
-    collections::HashSet,
+    collections::HashMap,
     io::{self, Stdout},
     panic,
     time::Duration,
@@ -26,6 +26,14 @@ use crate::{
     disassembler, print_cpu_backtrace,
 };
 
+// To create a conditional:
+//      let br = debugger::Breakpoint::AddressConditional(10, Box::new(|| {}));
+pub enum Breakpoint {
+    Default,
+    Delay(u32, u32), // (Break after X, counter of hits)
+    Conditional(Box<dyn Fn() -> bool>),
+}
+
 pub enum ViewState {
     RAM,
     IO,
@@ -49,7 +57,7 @@ pub enum InputMode {
 pub struct Debugger {
     pub opcode: u32,
     pub state: ViewState,
-    pub breakpoints: HashSet<u32>,
+    pub breakpoints: HashMap<u32, Breakpoint>,
     pub instruction_counter: usize,
     pub free_run: bool,
     pub paused: bool,
@@ -65,7 +73,7 @@ impl Debugger {
     pub fn new() -> Self {
         Self {
             opcode: 0,
-            breakpoints: HashSet::default(),
+            breakpoints: HashMap::default(),
             state: ViewState::RAM,
             instruction_counter: 0,
             free_run: true,
@@ -98,7 +106,7 @@ impl Debugger {
 
         Self {
             opcode: 0,
-            breakpoints: HashSet::default(),
+            breakpoints: HashMap::default(),
             state: ViewState::RAM,
             instruction_counter: 0,
             free_run: false,
@@ -276,6 +284,21 @@ impl Debugger {
             println!("Backtrace:\n{bt}");
             print_cpu_backtrace();
         }));
+    }
+
+    pub fn should_break(&mut self, pc: u32) -> bool {
+        if (!self.paused || self.free_run) && self.breakpoints.contains_key(&pc) {
+            match self.breakpoints.get_mut(&pc).unwrap() {
+                Breakpoint::Default => return true,
+                Breakpoint::Delay(max, cur) => {
+                    *cur += 1;
+                    return cur > max;
+                }
+                Breakpoint::Conditional(f) => return f(),
+            }
+        }
+
+        false
     }
 }
 

@@ -1,5 +1,5 @@
 use std::backtrace::Backtrace;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
@@ -14,7 +14,7 @@ use log::warn;
 use crate::backtrace::print_cpu_backtrace;
 use crate::backtrace::PC_BACKTRACE;
 use crate::cpu::CPU;
-use crate::debugger::DebuggerEvent;
+use crate::debugger::{Breakpoint, DebuggerEvent};
 use crate::game_window::{Dump, GameWindow, WindowEvent};
 use crate::renderer::RenderMessage;
 
@@ -89,13 +89,12 @@ fn main() {
 
     let mut dbg = Debugger::new();
     Debugger::set_panic_hook();
-    dbg.breakpoints = HashSet::from([
-        //0x00000000, 0x13c, 0x080002e0,
-        //0x080016BC
-        // 0x03000188,
-        //0x080026a4,
-        0x0801b2d6, // BL to function
-        0x08050b18, // Return from function
+    dbg.breakpoints = HashMap::from([
+        //(0x08000620, Breakpoint::Delay(3, 0)),
+        //(0x08000624, Breakpoint::Delay(3, 0)),
+        (0x080003B8, Breakpoint::Delay(13, 0)),
+        //0x08000620, // m3_line in bottom left frame
+        //0x08000624,
     ]);
 
     let (win_tx, win_rx) = mpsc::channel();
@@ -164,8 +163,7 @@ fn main() {
         dbg.opcode = opcode;
 
         #[cfg(feature = "debugger")]
-        if !cpu.panic && (!dbg.paused || dbg.free_run) && dbg.breakpoints.contains(&program_counter)
-        {
+        if !cpu.panic && dbg.should_break(program_counter) {
             warn!("Breakpoint hit at `{:08X}`", program_counter);
             dbg.free_run = false;
             dbg.paused = true;
