@@ -1500,9 +1500,36 @@ impl CPU {
 
                 (res, (res & 0x80000000) != 0, res == 0, carry, v)
             } // LSL
-            0x3 => todo!("Implement LSR"), // LSR
-            0x4 => todo!("Implement ASR"), // ASR
-            0x7 => todo!("Implement ROR"), // ROR
+            0x3 => {
+                info!(
+                    "[0x{:08X}] => execute: `LSR R{},R{}`",
+                    self.registers[15], rd, rs
+                );
+                let op2 = 0b0000_0_01_1_0000 | ((rs as u16) << 8) | (rd as u16);
+                let (rot_val, _) = self.alu_operand2_calc(false, op2);
+
+                self.alu(ALU_MOV, rd_val, rot_val)
+            }
+            0x4 => {
+                info!(
+                    "[0x{:08X}] => execute: `ASR R{},R{}`",
+                    self.registers[15], rd, rs
+                );
+                let op2 = 0b0000_0_10_1_0000 | ((rs as u16) << 8) | (rd as u16);
+                let (rot_val, _) = self.alu_operand2_calc(false, op2);
+
+                self.alu(ALU_MOV, rd_val, rot_val)
+            }
+            0x7 => {
+                info!(
+                    "[0x{:08X}] => execute: `ROR R{},R{}`",
+                    self.registers[15], rd, rs
+                );
+                let op2 = 0b0000_0_11_1_0000 | ((rs as u16) << 8) | (rd as u16);
+                let (rot_val, _) = self.alu_operand2_calc(false, op2);
+
+                self.alu(ALU_MOV, rd_val, rot_val)
+            }
             0x9 => {
                 info!(
                     "[0x{:08X}] => execute: `NEG R{},R{}`",
