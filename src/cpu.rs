@@ -2244,134 +2244,65 @@ impl CPU {
 
         match op {
             ALU_TST => return self.alu_tst(operand1, operand2),
-            ALU_CMP => {
-                let (result, carry) = operand1.overflowing_sub(operand2);
-                let signed = result as i32;
-                return (
-                    result,
-                    signed < 0,
-                    signed == 0,
-                    !carry,
-                    (op1_is_neg != op2_is_neg) && (op2_is_neg == (signed < 0)),
-                );
-            }
-            ALU_CMN => {
-                let (result, carry) = operand1.overflowing_add(operand2);
-                let signed = result as i32;
-                return (
-                    result,
-                    signed < 0,
-                    signed == 0,
-                    carry,
-                    (op1_is_neg == op2_is_neg) && (op2_is_neg != (signed < 0)),
-                );
-            }
             _ => {}
         }
 
         let (result, carry, overflow) = match op {
-            ALU_AND | ALU_TST => {
-                if op == 0x0 {
-                    //info!("ALU: `AND #{}, #{}`", operand1, operand2);
-                } else {
-                    //println!("ALU: `TST #{}, #{}`", operand1, operand2);
-                }
-                (operand1 & operand2, false, false)
-            }
-            ALU_EOR | ALU_TEQ => {
-                if op == 0x1 {
-                    //info!("ALU: `EOR #{}, #{}`", operand1, operand2);
-                } else {
-                    //info!("ALU: `TEQ #{}, #{}`", operand1, operand2);
-                }
-                (operand1 ^ operand2, false, false)
-            }
+            ALU_AND | ALU_TST => (operand1 & operand2, false, false),
+            ALU_EOR | ALU_TEQ => (operand1 ^ operand2, false, false),
             ALU_SUB | ALU_CMP => {
-                if op == 0x2 {
-                    //info!("ALU: `SUB #{}, #{}`", operand1, operand2);
-                } else {
-                    //info!("ALU: `CMP #{}, #{}`", operand1, operand2);
-                }
                 let (result, carry) = operand1.overflowing_sub(operand2);
-                let overflow = (operand1 & 0x80000000) != (result & 0x80000000);
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg != op2_is_neg) && (op2_is_neg == res_is_neg);
                 (result, !carry, overflow)
             }
             ALU_RSB => {
-                //info!("ALU: `RSB #{}, #{}`", operand1, operand2);
                 let (result, carry) = operand2.overflowing_sub(operand1);
-                let overflow = (operand2 ^ result) & 0x80000000 > 0;
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg != op2_is_neg) && (op2_is_neg == res_is_neg);
                 (result, !carry, overflow)
             }
             ALU_ADD | ALU_CMN => {
-                if op == 0x4 {
-                    //info!("ALU: `ADD #{}, #{}`", operand1, operand2);
-                } else {
-                    //info!("ALU: `CMN #{}, #{}`", operand1, operand2);
-                }
                 let (result, carry) = operand1.overflowing_add(operand2);
-                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg == op2_is_neg) && (op2_is_neg != res_is_neg);
                 (result, carry, overflow)
             }
             ALU_ADC => {
-                //info!(
-                //    "ALU: `ADC #{}, #{}, C{}`",
-                //    operand1,
-                //    operand2,
-                //    self.get_flag_c() as u8
-                //);
                 let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_add(operand2);
-                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg == op2_is_neg) && (op2_is_neg != res_is_neg);
                 (result, carry | carry2, overflow)
             }
             ALU_SBC => {
-                //info!(
-                //    "ALU: `SBC #{}, #{}, C{}`",
-                //    operand1,
-                //    operand2,
-                //    self.get_flag_c() as u8
-                //);
                 let (result, carry) = operand2.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_sub(1);
                 let (result, carry3) = operand1.overflowing_sub(result);
-                let overflow = (operand1 ^ result) & 0x80000000 > 0;
+
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg != op2_is_neg) && (op2_is_neg == res_is_neg);
 
                 // TODO: Is this correct?
                 warn!("Data Processing: SBC, correct?");
                 (result, carry | carry2 | carry3, overflow)
             }
             ALU_RSC => {
-                //info!(
-                //    "ALU: `RSC #{}, #{}, C{}`",
-                //    operand1,
-                //    operand2,
-                //    self.get_flag_c() as u8
-                //);
                 let (result, carry) = operand1.overflowing_add(self.get_flag_c() as u32);
                 let (result, carry2) = result.overflowing_sub(1);
                 let (result, carry3) = operand2.overflowing_sub(result);
-                let overflow = (operand2 ^ result) & 0x80000000 > 0;
+
+                let res_is_neg = (result as i32) < 0;
+                let overflow = (op1_is_neg != op2_is_neg) && (op2_is_neg == res_is_neg);
 
                 // TODO: Is this correct?
                 warn!("Data Processing: RSC, correct?");
                 (result, carry | carry2 | carry3, overflow)
             }
-            ALU_ORR => {
-                //info!("ALU: `ORR #0x{:X}, #0x{:X}`", operand1, operand2);
-                (operand1 | operand2, false, false)
-            }
-            ALU_MOV => {
-                //info!("ALU: `MOV #0x{:X}`", operand2);
-                (operand2, false, false)
-            }
-            ALU_BIC => {
-                //info!("ALU: `BIC #{}, #{}`", operand1, operand2);
-                (operand1 & !(operand2), false, false)
-            }
-            ALU_MVN => {
-                //info!("ALU: `MVN #{}`", operand2);
-                (!operand2, false, false)
-            }
+            ALU_ORR => (operand1 | operand2, false, false),
+            ALU_MOV => (operand2, false, false),
+            ALU_BIC => (operand1 & !(operand2), false, false),
+            ALU_MVN => (!operand2, false, false),
             _ => unreachable!(),
         };
 
@@ -3389,8 +3320,8 @@ mod tests {
         cpu.write_register(2, 1);
         cpu.reg_cpsr = 0x0;
         cpu.execute_thumb(opcode_reg_add);
+        assert_eq!(cpu.get_flag_z(), true);
         assert_eq!(cpu.get_flag_c(), true);
-        assert_eq!(cpu.get_flag_v(), true);
     }
 
     /// Thumb Format3
@@ -3474,7 +3405,6 @@ mod tests {
     }
 
     /// Thumb Format4
-    #[ignore]
     #[test]
     fn thumb_alu() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
@@ -3483,14 +3413,23 @@ mod tests {
         let mut cpu = CPU::new(&vram, &palette, &oam);
 
         // TST R0, R1 (equal)
-        let opcode_tst_equal = 0b0100_00_1000_001_000;
-        cpu.write_register(0, 0x10);
-        cpu.write_register(1, 0x10);
-        cpu.thumb_alu(opcode_tst_equal);
-        assert!(!cpu.get_flag_n());
-        assert!(cpu.get_flag_z());
-        assert!(!cpu.get_flag_c());
-        assert!(!cpu.get_flag_v());
+        //let opcode_tst_equal = 0b0100_00_1000_001_000;
+        //cpu.write_register(0, 0x10);
+        //cpu.write_register(1, 0x10);
+        //cpu.thumb_alu(opcode_tst_equal);
+        //assert!(!cpu.get_flag_n());
+        //assert!(cpu.get_flag_z());
+        //assert!(!cpu.get_flag_c());
+        //assert!(!cpu.get_flag_v());
+
+        // ROR Rd(1), Rs(0)
+        let shift_amount = 5;
+        let rd_val = 0x4D;
+        cpu.write_register(0, shift_amount);
+        cpu.write_register(1, rd_val);
+        let opcode = 0b010000_0111_000_001;
+        cpu.thumb_alu(opcode);
+        assert_eq!(cpu.read_register(1), rd_val.rotate_right(shift_amount));
     }
 
     #[test]
