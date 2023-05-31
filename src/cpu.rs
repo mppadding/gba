@@ -2707,7 +2707,9 @@ impl CPU {
 
         self.operation_ldr_str(rd, rb, offset, load, write_back, pre, up, byte, reg);
 
-        self.step_program_counter(4);
+        if rd != 15 {
+            self.step_program_counter(4);
+        }
     }
 
     fn arm_mrs(&mut self, opcode: u32) {
