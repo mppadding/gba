@@ -1,6 +1,7 @@
-/target
 /bios
+/dump
 /roms
+/target
 *.svg
 perf.*
 scratch.md
