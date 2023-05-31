@@ -2147,6 +2147,68 @@ impl CPU {
         );
     }
 
+    fn alu_operand2_calc(&self, imm: bool, op2: u16) -> (u32, bool) {
+        if imm {
+            let rotate = ((op2 >> 8) & 0xF) as u32;
+            let val = (op2 & 0xFF) as u32;
+
+            (val.rotate_right(rotate * 2), self.get_flag_c())
+        } else {
+            let rm = (op2 & 0xF) as u8;
+            let rm_val = self.read_register(rm);
+            let shift_type = (op2 >> 5) & 0x3;
+            let shift_imm = (op2 & 0x10) == 0x0;
+
+            let shift_amount = match shift_imm {
+                false => {
+                    let rs = ((op2 >> 8) & 0xF) as u8;
+                    self.read_register(rs) & 0xFF
+                }
+                true => ((op2 >> 7) & 0x1F) as u32,
+            };
+
+            match shift_type {
+                0b00 => {
+                    let carry = match shift_amount {
+                        0 => self.get_flag_c(),
+                        1..=31 => (rm_val & (1 << (31 - shift_amount))) != 0,
+                        _ => false,
+                    };
+
+                    (rm_val << shift_amount, carry)
+                }
+                0b01 => match shift_amount {
+                    // 0 is encoded as shift 32 => 0, with carry of bit 31
+                    0 => (0, (rm_val & (1 << 31)) != 0),
+                    1..=31 => (
+                        (rm_val >> shift_amount),
+                        (rm_val & (1 << (shift_amount - 1))) != 0,
+                    ),
+                    _ => (0, false),
+                },
+                0b10 => match (shift_amount, (rm_val as i32) < 0) {
+                    (1..=31, _) => (
+                        ((rm_val as i32) >> shift_amount) as u32,
+                        (rm_val & (1 << (shift_amount - 1))) != 0,
+                    ),
+                    (_, false) => (0x00000000, (rm_val & (1 << 31)) != 0),
+                    (_, true) => (0xFFFFFFFF, (rm_val & (1 << 31)) != 0),
+                },
+                0b11 => match shift_amount {
+                    0 => (
+                        (rm_val >> 1) | ((self.get_flag_c() as u32) << 31),
+                        (rm_val & 0x1) != 0,
+                    ),
+                    _ => (
+                        rm_val.rotate_right(shift_amount),
+                        (rm_val & (1 << (shift_amount - 1))) != 0,
+                    ),
+                },
+                _ => unreachable!(),
+            }
+        }
+    }
+
     /// Performs ALU operation
     /// Returns (result, N, Z, C, V)
     fn alu(&mut self, op: u8, operand1: u32, operand2: u32) -> (u32, bool, bool, bool, bool) {
@@ -2449,65 +2511,8 @@ impl CPU {
             true => "S",
         };
 
-        let (operand2, shifter_carry, op2_str) = if i {
-            let imm = opcode & 0xFF;
-            let rot = ((opcode >> 8) & 0xF) << 1;
-
-            (imm.rotate_right(rot), self.get_flag_c(), String::new())
-        } else {
-            let rm = (opcode & 0xF) as usize;
-            let shift_type = ((opcode >> 5) & 0x3) as u8;
-            let is_reg = (opcode & 0x10) != 0x00;
-
-            let rm_value = self.read_register(rm as u8);
-
-            let (shift_amount, rm_value) = if !is_reg {
-                let shift = (opcode >> 7) & 0x1F;
-                if rm == 15 {
-                    (shift, rm_value + 8)
-                } else {
-                    (shift, rm_value)
-                }
-            } else {
-                let shift = self.read_register(((opcode >> 7) & 0xF) as u8);
-                self.cycle_count += 1;
-                if rm == 15 {
-                    (shift, rm_value + 12)
-                } else {
-                    (shift, rm_value)
-                }
-            };
-
-            match shift_type {
-                0x0 => {
-                    let (result, overflow) = rm_value.overflowing_shl(shift_amount);
-                    let carry = if shift_amount == 32 {
-                        (rm_value & 0x1) == 0x1
-                    } else if shift_amount > 32 {
-                        false
-                    } else {
-                        overflow
-                    };
-
-                    (result, carry, String::new())
-                }
-                0x1 => {
-                    let (result, overflow) = rm_value.overflowing_shr(shift_amount);
-                    let carry = if shift_amount == 32 {
-                        (rm_value >> 31) == 0x1
-                    } else if shift_amount > 32 {
-                        false
-                    } else {
-                        overflow
-                    };
-
-                    (result, carry, format!("R{rm},LSR #{shift_amount}"))
-                }
-                0x2 => todo!("arithmetic right"),
-                0x3 => todo!("rotate right"),
-                _ => unreachable!(),
-            }
-        };
+        let (operand2, shifter_carry) = self.alu_operand2_calc(i, (opcode & 0xFFFF) as u16);
+        let op2_str = String::new();
 
         let (result, logical, carry, overflow) = match op {
             0x0 | 0x8 => {
@@ -4286,6 +4291,89 @@ mod tests {
         cpu.trigger_irq(IRQ_VBLANK);
         assert!(!cpu.halt);
     }
+
+    #[test]
+    fn alu_operand2_calc_imm() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        let imm: u32 = 0x4D;
+        let rot: u32 = 0x3;
+
+        let (result, _) = cpu.alu_operand2_calc(true, ((rot << 8) | imm) as u16);
+        assert_eq!(result, imm.rotate_right(rot * 2));
+    }
+
+    #[test]
+    fn alu_operand2_calc_shift_imm() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        let rm_val = 0x4D;
+        cpu.write_register(0, rm_val);
+
+        let shift_amount = 5;
+        let op_lsl = 0b00101_00_0_0000 | (shift_amount << 7);
+        let op_lsr = 0b00101_01_0_0000 | (shift_amount << 7);
+        let op_asr = 0b00101_10_0_0000 | (shift_amount << 7);
+        let op_ror = 0b00101_11_0_0000 | (shift_amount << 7);
+
+        // LSL R0,5
+        let (result, _) = cpu.alu_operand2_calc(false, op_lsl);
+        assert_eq!(result, rm_val << shift_amount);
+
+        // LSR R0,5
+        let (result, _) = cpu.alu_operand2_calc(false, op_lsr);
+        assert_eq!(result, rm_val >> shift_amount);
+
+        // ASR R0,5
+        let (result, _) = cpu.alu_operand2_calc(false, op_asr);
+        assert_eq!(result as i32, (rm_val as i32) >> shift_amount);
+
+        // ROR R0,5
+        let (result, _) = cpu.alu_operand2_calc(false, op_ror);
+        assert_eq!(result, rm_val.rotate_right(shift_amount as u32));
+    }
+
+    #[test]
+    fn alu_operand2_calc_shift_reg() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        let rm_val = 0x4D;
+        let shift_amount = 5;
+
+        cpu.write_register(0, rm_val);
+        cpu.write_register(1, shift_amount);
+
+        let op_lsl = 0b0001_0_00_1_0000;
+        let op_lsr = 0b0001_0_01_1_0000;
+        let op_asr = 0b0001_0_10_1_0000;
+        let op_ror = 0b0001_0_11_1_0000;
+
+        // LSL R0,R1
+        let (result, _) = cpu.alu_operand2_calc(false, op_lsl);
+        assert_eq!(result, rm_val << shift_amount);
+
+        // LSR R0,R1
+        let (result, _) = cpu.alu_operand2_calc(false, op_lsr);
+        assert_eq!(result, rm_val >> shift_amount);
+
+        // ASR R0,R1
+        let (result, _) = cpu.alu_operand2_calc(false, op_asr);
+        assert_eq!(result as i32, (rm_val as i32) >> shift_amount);
+
+        // ROR R0,R1
+        let (result, _) = cpu.alu_operand2_calc(false, op_ror);
+        assert_eq!(result, rm_val.rotate_right(shift_amount as u32));
+    }
+
     #[test]
     fn arm_multiply() {
         let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
