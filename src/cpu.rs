@@ -2869,10 +2869,28 @@ impl CPU {
             }
             (true, false) => {
                 // Signed Byte
-                todo!("Signed Byte");
+                info!(
+                    "[0x{:08X}] => execute: `LDRSB R{rd},[R{rn},#0x{offset:X}]`",
+                    self.get_program_counter()
+                );
+
+                let val = self.read_u8(true, base);
+
+                // Sign extend
+                let val = match (val as i8) > 0 {
+                    false => 0xFFFFFF00 | (val as u32),
+                    true => val as u32,
+                };
+
+                self.write_register(rd, val);
             }
             (true, true) => {
                 // Signed Halfwords
+                info!(
+                    "[0x{:08X}] => execute: `LDRSH R{rd},[R{rn},#0x{offset:X}]`",
+                    self.get_program_counter()
+                );
+
                 todo!("Signed Halfwords");
             }
         }
