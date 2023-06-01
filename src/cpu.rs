@@ -1302,6 +1302,14 @@ impl CPU {
         }
     }
 
+    // SWI 0x15
+    fn syscall_rl_uncomp_read_normal_write_16bit_vram(&mut self) {
+        let src_addr = self.read_register(0);
+        let dest_addr = self.read_register(1);
+
+        todo!("Implement SWI 0x15");
+    }
+
     fn bios_syscall(&mut self, syscall: u8) {
         match syscall {
             0x01 => self.syscall_register_ram_reset(),
@@ -1312,6 +1320,7 @@ impl CPU {
             0x07 => self.syscall_div_arm(),
             0x0B => self.syscall_cpu_set(),
             0x0C => self.syscall_cpu_fast_set(),
+            0x15 => self.syscall_rl_uncomp_read_normal_write_16bit_vram(),
             _ => panic!("Unknown BIOS syscall `{:02X}h`", syscall),
         }
     }
@@ -2625,10 +2634,6 @@ impl CPU {
         };
     }
 
-    fn arm_shifted_offset(&self) {
-        todo!("Implement");
-    }
-
     fn arm_single_data_transfer(&mut self, opcode: u32) {
         let offset = opcode & 0xFFF;
         let rd = ((opcode >> 12) & 0xF) as u8;
@@ -2890,12 +2895,12 @@ impl CPU {
         }
 
         // Shifted offset
-        if reg {
-            let rm = (offset & 0xF) as usize;
-            let shift = offset >> 4;
-
-            todo!("Implement shifts in LDR/STR");
-        }
+        let offset = if reg {
+            let (off, _) = self.alu_operand2_calc(false, offset as u16);
+            off
+        } else {
+            offset
+        };
 
         let base = if r_base == 15 {
             if self.is_thumb() {
