@@ -330,3 +330,61 @@ pub fn draw_texture(
         _ => panic!("Unknown LCD BG mode"),
     }
 }
+
+fn fill_texture_argb(texture: &mut Texture, width: usize, height: usize, argb: u32) {
+    let a = ((argb >> 24) & 0xFF) as u8;
+    let r = ((argb >> 16) & 0xFF) as u8;
+    let g = ((argb >> 8) & 0xFF) as u8;
+    let b = ((argb >> 0) & 0xFF) as u8;
+
+    texture
+        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in 0..height {
+                for x in 0..width {
+                    let offset = y * pitch + x * 4;
+
+                    buffer[offset] = a;
+                    buffer[offset + 1] = r;
+                    buffer[offset + 2] = g;
+                    buffer[offset + 3] = b;
+                }
+            }
+        })
+        .expect("[SDL] Cannot fill texture");
+}
+
+/// Fills 4 quadrant with colors
+///     1 | 2
+///     --+--
+///     3 | 4
+///
+///     1 => Red
+///     2 => Green
+///     3 => Blue
+///     4 => White
+pub fn test_draw_background(texture: &mut Texture, width: usize, height: usize) {
+    // Fill texture with black
+    fill_texture_argb(texture, width, height, 0xFF000000);
+
+    texture
+        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in 0..height {
+                for x in 0..width {
+                    let offset = y * pitch + x * 4;
+
+                    let (r, g, b) = match (y >= (height / 2), x >= (width / 2)) {
+                        (false, false) => (0xFF, 0, 0),
+                        (false, true) => (0, 0xFF, 0),
+                        (true, false) => (0, 0, 0xFF),
+                        (true, true) => (0xFF, 0xFF, 0xFF),
+                    };
+
+                    buffer[offset] = 0xFF;
+                    buffer[offset + 1] = r;
+                    buffer[offset + 2] = g;
+                    buffer[offset + 3] = b;
+                }
+            }
+        })
+        .expect("[SDL] Cannot fill texture");
+}
