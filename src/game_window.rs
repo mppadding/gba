@@ -3,6 +3,7 @@ use sdl2::{
     event::Event,
     keyboard::Keycode,
     pixels::PixelFormatEnum,
+    rect::Rect,
     render::{Canvas, TextureCreator},
     video::{Window, WindowContext},
     EventPump,
@@ -78,17 +79,29 @@ impl GameWindow {
 
     pub fn draw(&mut self, msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, oam: &Vec<u8>) {
         self.canvas.clear();
-        let mut texture = self
+
+        /*
+         * Draw BG 0
+         */
+        let (bg0_w, bg0_h) = renderer::get_texture_dimensions(msg);
+        let mut bg0 = self
             .texture_creator
-            .create_texture_streaming(PixelFormatEnum::BGRA8888, 240, 160)
+            .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w, bg0_h)
             .map_err(|e| e.to_string())
             .expect("[SDL] Cannot create texture");
+        renderer::draw_background(&mut bg0, msg, vram, palette, 0);
 
-        renderer::draw_texture(msg, vram, palette, oam, &mut texture);
+        let (offset_x, offset_y) = msg.bg_offset;
+
         self.canvas
-            .copy(&texture, None, None)
-            .expect("[SDL] Cannot copy texture");
+            .copy(
+                &bg0,
+                Some(Rect::new(offset_x as i32, offset_y as i32, 240, 160)),
+                Some(Rect::new(0, 0, 240, 160)),
+            )
+            .expect("[SDL] Cannot copy background0");
 
+        // Render to canvas
         self.canvas.present();
     }
 
