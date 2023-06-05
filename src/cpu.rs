@@ -2451,7 +2451,7 @@ impl CPU {
             info!(
                 "[0x{:08X}] => execute: `B 0x{:X}` => 0x{:08X}",
                 self.registers[15],
-                offset + 8,
+                (offset as i32) + 8,
                 target
             );
         }
