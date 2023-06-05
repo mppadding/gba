@@ -86,20 +86,23 @@ impl GameWindow {
         let (bg0_w, bg0_h) = renderer::get_texture_dimensions(msg);
         let mut bg0 = self
             .texture_creator
-            .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w, bg0_h)
+            .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w as u32, bg0_h as u32)
             .map_err(|e| e.to_string())
             .expect("[SDL] Cannot create texture");
-        renderer::draw_background(&mut bg0, msg, vram, palette, 0);
 
         let (offset_x, offset_y) = msg.bg_offset;
-
-        self.canvas
-            .copy(
-                &bg0,
-                Some(Rect::new(offset_x as i32, offset_y as i32, 240, 160)),
-                Some(Rect::new(0, 0, 240, 160)),
-            )
-            .expect("[SDL] Cannot copy background0");
+        renderer::draw_background(&mut bg0, msg, vram, palette, 0);
+        renderer::render_background_to_canvas(
+            &mut self.canvas,
+            &bg0,
+            &renderer::BackgroundMessage {
+                control: msg.bg_control,
+                offset_x,
+                offset_y,
+                width: bg0_w,
+                height: bg0_h,
+            },
+        );
 
         // Render to canvas
         self.canvas.present();

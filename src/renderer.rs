@@ -1,5 +1,11 @@
+use std::cmp;
+
 use log::warn;
-use sdl2::render::Texture;
+use sdl2::{
+    rect::Rect,
+    render::{Canvas, Texture},
+    video::Window,
+};
 
 #[derive(Debug)]
 pub struct RenderMessage {
@@ -7,6 +13,15 @@ pub struct RenderMessage {
     pub frame: bool,
     pub bg_control: u16,
     pub bg_offset: (u16, u16),
+}
+
+#[derive(Debug)]
+pub struct BackgroundMessage {
+    pub control: u16,
+    pub offset_x: u16,
+    pub offset_y: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Breaks 16 bit pixel color into 8 bit color components
@@ -43,7 +58,6 @@ fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8) -> (u8, u8, u8, u8)
 }
 
 fn draw_tile_4bpp(
-    msg: &RenderMessage,
     vram: &Vec<u8>,
     palette: &Vec<u8>,
     buffer: &mut [u8],
@@ -69,14 +83,28 @@ fn draw_tile_4bpp(
     let y_base = y * 8;
 
     for tile_y in 0..tile_height {
-        let row_base = base_tile + (tile_y * tile_width);
+        let row_base = match vertical_flip {
+            false => base_tile + (tile_y * tile_width),
+            true => base_tile + (((tile_height - 1) - tile_y) * tile_width),
+        };
+
         let row = &vram[row_base..row_base + tile_width];
 
         for tile_x in 0..tile_width {
             let y_offset = (y_base + tile_y) * pitch;
-            let offset = y_offset + (x_base + (tile_x * 2)) * 4;
-            let left_color = get_palette_color(palette, 0, (row[tile_x] & 0x0F) | palbank);
-            let right_color = get_palette_color(palette, 0, (row[tile_x] >> 4) | palbank);
+            let x_offset = match horizontal_flip {
+                false => (x_base + (tile_x * 2)) * 4,
+                true => (x_base + (((tile_width - 1) - tile_x) * 2)) * 4,
+            };
+
+            let offset = y_offset + x_offset;
+            let (left_pal, right_pal) = match horizontal_flip {
+                false => ((row[tile_x] & 0x0F) | palbank, (row[tile_x] >> 4) | palbank),
+                true => ((row[tile_x] >> 4) | palbank, (row[tile_x] & 0x0F) | palbank),
+            };
+
+            let left_color = get_palette_color(palette, 0, left_pal);
+            let right_color = get_palette_color(palette, 0, right_pal);
 
             buffer[offset] = left_color.0;
             buffer[offset + 1] = left_color.1;
@@ -92,7 +120,6 @@ fn draw_tile_4bpp(
 }
 
 fn draw_tile_8bpp(
-    msg: &RenderMessage,
     vram: &Vec<u8>,
     palette: &Vec<u8>,
     buffer: &mut [u8],
@@ -118,12 +145,19 @@ fn draw_tile_8bpp(
 
     for tile_y in 0..tile_height {
         // Get slice of row
-        let row_base = base_tile + (tile_y * tile_width);
+        let row_base = match vertical_flip {
+            false => base_tile + (tile_y * tile_width),
+            true => base_tile + (((tile_height - 1) - tile_y) * tile_width),
+        };
         let row = &vram[row_base..row_base + tile_width];
 
         for tile_x in 0..tile_width {
             let y_offset = (y_base + tile_y) * pitch;
-            let x_offset = (x_base + tile_x) * 4;
+            let x_offset = match horizontal_flip {
+                false => (x_base + tile_x) * 4,
+                true => (x_base + ((tile_width - 1) - tile_x)) * 4,
+            };
+
             let offset = y_offset + x_offset;
             let color = get_palette_color(palette, 0, row[tile_x]);
 
@@ -199,15 +233,15 @@ fn draw_tilemap(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture:
                     if color_4bit {
                         if tile_id < 512 {
                             draw_tile_4bpp(
-                                msg, vram, palette, buffer, x as usize, y as usize, cbb_bytes,
-                                pitch, tile,
+                                vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
+                                tile,
                             );
                         }
                     } else {
                         if tile_id < 256 {
                             draw_tile_8bpp(
-                                msg, vram, palette, buffer, x as usize, y as usize, cbb_bytes,
-                                pitch, tile,
+                                vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
+                                tile,
                             );
                         }
                     }
@@ -225,9 +259,6 @@ pub fn draw_mode0(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, textur
     let screen_size = (msg.bg_control >> 14) & 0x3;
 
     let cbb_bytes = (character_base_block * 16 * 1024) as usize;
-    let sbb_bytes = (screen_base_block * 2 * 1024) as usize;
-
-    let (offset_x, offset_y) = msg.bg_offset;
 
     let (width, height) = match screen_size {
         0 => (256, 256),
@@ -238,14 +269,6 @@ pub fn draw_mode0(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, textur
     };
 
     let (width_tiles, height_tiles) = (width / 8, height / 8);
-
-    if width < (offset_x + 240) {
-        todo!("X wrap around");
-    }
-
-    if height < (offset_y + 160) {
-        todo!("Y wrap around");
-    }
 
     // Tiles are 8x8 pixels
     //
@@ -263,13 +286,11 @@ pub fn draw_mode0(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, textur
 
                     if color_4bit {
                         draw_tile_4bpp(
-                            msg, vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
-                            tile,
+                            vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch, tile,
                         );
                     } else {
                         draw_tile_8bpp(
-                            msg, vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
-                            tile,
+                            vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch, tile,
                         );
                     }
                 }
@@ -300,7 +321,124 @@ fn fill_texture_argb(texture: &mut Texture, width: usize, height: usize, argb: u
         .expect("[SDL] Cannot fill texture");
 }
 
-pub fn get_texture_dimensions(msg: &RenderMessage) -> (u32, u32) {
+/// Splits texture into 4 (src, dest) rects based on offset
+///
+/// Source rectangles (of texture):
+///     1 | 2
+///     --+--
+///     3 | 4
+///
+/// Dest rectangles (of window):
+///     4 | 3
+///     --+--
+///     2 | 1
+///
+/// The + indicates the offset coordinate
+fn split_texture_rects(
+    msg: &BackgroundMessage,
+) -> (
+    Option<(Rect, Rect)>,
+    Option<(Rect, Rect)>,
+    Option<(Rect, Rect)>,
+    (Rect, Rect),
+) {
+    let offset_x = msg.offset_x % msg.width;
+    let offset_y = msg.offset_y % msg.height;
+
+    let width = msg.width as u32;
+    let height = msg.height as u32;
+
+    let win_width = 240;
+    let win_height = 160;
+
+    let w_right = width - (offset_x as u32);
+    let h_bottom = height - (offset_y as u32);
+
+    let offset_x = offset_x as i32;
+    let offset_y = offset_y as i32;
+
+    let w_right_window = cmp::min(w_right, win_width);
+    let h_bottom_window = cmp::min(h_bottom, win_height);
+
+    let r1 = match h_bottom_window < win_height && w_right_window < win_width {
+        false => None,
+        true => {
+            let d_height = win_height - h_bottom_window;
+            let d_width = win_width - w_right_window;
+
+            Some((
+                Rect::new(0, 0, d_width, d_height),
+                Rect::new(
+                    w_right_window as i32,
+                    h_bottom_window as i32,
+                    d_width,
+                    d_height,
+                ),
+            ))
+        }
+    };
+
+    let r2 = match h_bottom_window < win_height {
+        false => None,
+        true => {
+            let d_height = win_height - h_bottom_window;
+            Some((
+                Rect::new(offset_x, 0, w_right_window, d_height),
+                Rect::new(0, h_bottom_window as i32, w_right_window, d_height),
+            ))
+        }
+    };
+
+    let r3 = match w_right_window < win_width {
+        false => None,
+        true => {
+            let d_width = win_width - w_right_window;
+            Some((
+                Rect::new(0, offset_y, d_width, h_bottom_window),
+                Rect::new(w_right_window as i32, 0, d_width, h_bottom_window),
+            ))
+        }
+    };
+
+    let r4 = (
+        Rect::new(offset_x, offset_y, w_right_window, h_bottom_window),
+        Rect::new(0, 0, w_right_window, h_bottom_window),
+    );
+
+    (r1, r2, r3, r4)
+}
+
+pub fn render_background_to_canvas(
+    canvas: &mut Canvas<Window>,
+    background: &Texture,
+    msg: &BackgroundMessage,
+) {
+    let (r1, r2, r3, r4) = split_texture_rects(msg);
+
+    if let Some((src, dest)) = r1 {
+        canvas
+            .copy(background, Some(src), Some(dest))
+            .expect("[SDL] Cannot copy background0");
+    }
+
+    if let Some((src, dest)) = r2 {
+        canvas
+            .copy(background, Some(src), Some(dest))
+            .expect("[SDL] Cannot copy background0");
+    }
+
+    if let Some((src, dest)) = r3 {
+        canvas
+            .copy(background, Some(src), Some(dest))
+            .expect("[SDL] Cannot copy background0");
+    }
+
+    canvas
+        .copy(background, Some(r4.0), Some(r4.1))
+        .expect("[SDL] Cannot copy background0");
+}
+
+pub fn get_texture_dimensions(msg: &RenderMessage) -> (u16, u16) {
     match msg.mode {
         0 => {
             let screen_size = (msg.bg_control >> 14) & 0x3;
