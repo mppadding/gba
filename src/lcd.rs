@@ -123,7 +123,10 @@ impl LCD {
 
     pub fn get_background_offset(&self, n: u8) -> (u16, u16) {
         let offset = 0x10 + (n * 4) as u32;
-        (self.get_u16(offset), self.get_u16(offset + 2))
+        (
+            self.get_u16(offset) & 0x1FF,
+            self.get_u16(offset + 2) & 0x1FF,
+        )
     }
 
     pub fn get_window_dimensions(&self, n: u8) -> (u16, u16) {
