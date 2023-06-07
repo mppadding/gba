@@ -1,8 +1,7 @@
 use std::cmp;
 
-use log::warn;
 use sdl2::{
-    rect::Rect,
+    rect::{Point, Rect},
     render::{Canvas, Texture},
     video::Window,
 };
@@ -24,6 +23,71 @@ pub struct BackgroundMessage {
     pub height: u16,
 }
 
+struct ObjectAttributes {
+    attr0: u16,
+    attr1: u16,
+    attr2: u16,
+    fill: i16,
+}
+
+impl ObjectAttributes {
+    fn get_size(&self) -> (usize, usize) {
+        let shape = ((self.attr0 >> 14) & 0x3) as u8;
+        let size = ((self.attr1 >> 14) & 0x3) as u8;
+
+        match (shape, size) {
+            (0, 0) => (8, 8),
+            (0, 1) => (16, 16),
+            (0, 2) => (32, 32),
+            (0, 3) => (64, 64),
+            //
+            (1, 0) => (16, 8),
+            (1, 1) => (32, 8),
+            (1, 2) => (32, 16),
+            (1, 3) => (64, 32),
+            //
+            (2, 0) => (8, 16),
+            (2, 1) => (8, 32),
+            (2, 2) => (16, 32),
+            (2, 3) => (32, 64),
+            (_, _) => panic!("Invalid Mode/shape for sprite `shape={shape:2b}, size={size:2b}`"),
+        }
+    }
+
+    fn get_tile_id(&self) -> u16 {
+        self.attr2 & 0x3FF
+    }
+
+    fn get_priority(&self) -> u8 {
+        ((self.attr2 >> 10) & 0x3) as u8
+    }
+
+    fn get_palbank(&self) -> u8 {
+        (self.attr2 >> 12) as u8
+    }
+}
+
+fn get_obj_attr(oam: &Vec<u8>, n: usize) -> ObjectAttributes {
+    let offset = n * 8;
+    ObjectAttributes {
+        attr0: ((oam[offset + 1] as u16) << 8) | (oam[offset + 0] as u16),
+        attr1: ((oam[offset + 3] as u16) << 8) | (oam[offset + 2] as u16),
+        attr2: ((oam[offset + 5] as u16) << 8) | (oam[offset + 4] as u16),
+        fill: (((oam[offset + 7] as u16) << 8) | (oam[offset + 6] as u16)) as i16,
+    }
+}
+
+fn get_obj_affine(oam: &Vec<u8>, n: usize) -> [ObjectAttributes; 4] {
+    let offset = n * 4;
+
+    [
+        get_obj_attr(oam, offset + 0),
+        get_obj_attr(oam, offset + 1),
+        get_obj_attr(oam, offset + 2),
+        get_obj_attr(oam, offset + 3),
+    ]
+}
+
 /// Breaks 16 bit pixel color into 8 bit color components
 /// Returns (a, r, g, b)
 fn get_colors(pixel: u16) -> (u8, u8, u8, u8) {
@@ -35,12 +99,22 @@ fn get_colors(pixel: u16) -> (u8, u8, u8, u8) {
     (0xFF, red as u8, green as u8, blue as u8)
 }
 
+fn get_sprite_palette_color(palette: &Vec<u8>, pixel: u8, color_4bit: bool) -> (u8, u8, u8, u8) {
+    if pixel == 0 || (color_4bit && (pixel & 0xF) == 0) {
+        return (0x00, 0x00, 0x00, 0x00);
+    }
+
+    let addr: usize = 0x200 + (pixel as usize) * 2;
+    let color = ((palette[addr + 1] as u16) << 8) | palette[addr] as u16;
+    get_colors(color)
+}
+
 /// Breaks 8 bit palette index into 8 bit color components
 /// Returns (a, r, g, b)
-fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8) -> (u8, u8, u8, u8) {
+fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8, color_4bit: bool) -> (u8, u8, u8, u8) {
     match mode {
         0 => {
-            if pixel == 0 {
+            if pixel == 0 || (color_4bit && (pixel & 0xF) == 0) {
                 return (0x00, 0x00, 0x00, 0x00);
             }
 
@@ -57,6 +131,8 @@ fn get_palette_color(palette: &Vec<u8>, mode: u8, pixel: u8) -> (u8, u8, u8, u8)
     }
 }
 
+/// Draw tile in 4 bits per pixel color mode
+/// x & y are in pixels, not tiles
 fn draw_tile_4bpp(
     vram: &Vec<u8>,
     palette: &Vec<u8>,
@@ -66,6 +142,7 @@ fn draw_tile_4bpp(
     cbb_bytes: usize,
     pitch: usize,
     tile: u16,
+    sprite: bool,
 ) {
     let tile_id = (tile & 0x3FF) as usize;
     let horizontal_flip = (tile & 0x400) != 0;
@@ -79,9 +156,6 @@ fn draw_tile_4bpp(
     let tile_width = 4;
     let tile_height = 8;
 
-    let x_base = x * 8;
-    let y_base = y * 8;
-
     for tile_y in 0..tile_height {
         let row_base = match vertical_flip {
             false => base_tile + (tile_y * tile_width),
@@ -91,10 +165,10 @@ fn draw_tile_4bpp(
         let row = &vram[row_base..row_base + tile_width];
 
         for tile_x in 0..tile_width {
-            let y_offset = (y_base + tile_y) * pitch;
+            let y_offset = (y + tile_y) * pitch;
             let x_offset = match horizontal_flip {
-                false => (x_base + (tile_x * 2)) * 4,
-                true => (x_base + (((tile_width - 1) - tile_x) * 2)) * 4,
+                false => (x + (tile_x * 2)) * 4,
+                true => (x + (((tile_width - 1) - tile_x) * 2)) * 4,
             };
 
             let offset = y_offset + x_offset;
@@ -103,8 +177,20 @@ fn draw_tile_4bpp(
                 true => ((row[tile_x] >> 4) | palbank, (row[tile_x] & 0x0F) | palbank),
             };
 
-            let left_color = get_palette_color(palette, 0, left_pal);
-            let right_color = get_palette_color(palette, 0, right_pal);
+            let (left_color, right_color) = match sprite {
+                false => (
+                    get_palette_color(palette, 0, left_pal, true),
+                    get_palette_color(palette, 0, right_pal, true),
+                ),
+                true => (
+                    get_sprite_palette_color(palette, left_pal, true),
+                    get_sprite_palette_color(palette, right_pal, true),
+                ),
+            };
+
+            //if sprite == true && tile_y == 0 && tile_x == 0 && x == 0 && y == 0 {
+            //    println!("sprite={sprite}, left_pal={left_pal}, right_pal={right_pal}, left_color={left_color:#?}, right_color={right_color:#?}");
+            //}
 
             buffer[offset] = left_color.0;
             buffer[offset + 1] = left_color.1;
@@ -119,6 +205,8 @@ fn draw_tile_4bpp(
     }
 }
 
+/// Draw tile in 8 bits per pixel color mode
+/// x & y are in pixels, not tiles
 fn draw_tile_8bpp(
     vram: &Vec<u8>,
     palette: &Vec<u8>,
@@ -140,9 +228,6 @@ fn draw_tile_8bpp(
     let tile_width = 8;
     let tile_height = 8;
 
-    let x_base = x * 8;
-    let y_base = y * 8;
-
     for tile_y in 0..tile_height {
         // Get slice of row
         let row_base = match vertical_flip {
@@ -152,14 +237,14 @@ fn draw_tile_8bpp(
         let row = &vram[row_base..row_base + tile_width];
 
         for tile_x in 0..tile_width {
-            let y_offset = (y_base + tile_y) * pitch;
+            let y_offset = (y + tile_y) * pitch;
             let x_offset = match horizontal_flip {
-                false => (x_base + tile_x) * 4,
-                true => (x_base + ((tile_width - 1) - tile_x)) * 4,
+                false => (x + tile_x) * 4,
+                true => (x + ((tile_width - 1) - tile_x)) * 4,
             };
 
             let offset = y_offset + x_offset;
-            let color = get_palette_color(palette, 0, row[tile_x]);
+            let color = get_palette_color(palette, 0, row[tile_x], false);
 
             buffer[offset] = color.0;
             buffer[offset + 1] = color.1;
@@ -169,24 +254,39 @@ fn draw_tile_8bpp(
     }
 }
 
-fn get_tile_from_vram(vram: &Vec<u8>, x: u16, y: u16, screen_base_block: u32) -> u16 {
+fn get_tile_from_vram(
+    vram: &Vec<u8>,
+    x: u16,
+    y: u16,
+    dim_t: (u16, u16),
+    screen_base_block: u32,
+) -> u16 {
     let block_size = 32;
 
-    let mut row = y * block_size;
-    let mut col = x;
     let mut sbb_page = 0;
 
     let x_overflow = x >= block_size;
     let y_overflow = y >= block_size;
 
+    let col = match x_overflow {
+        false => x,
+        true => x - block_size,
+    };
+
+    let row = match y_overflow {
+        false => y * block_size,
+        true => (y - block_size) * block_size,
+    };
+
     if x_overflow {
-        col -= block_size;
         sbb_page += 1;
     }
 
     if y_overflow {
-        row -= block_size;
         sbb_page += 1;
+        if dim_t.0 > 32 {
+            sbb_page += 1;
+        }
     }
 
     let sbb_addr = (screen_base_block + sbb_page) as usize * 0x800;
@@ -230,19 +330,18 @@ fn draw_tilemap(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture:
                     let tile_id = ((y * 30) + x) & 0x3FF;
                     let tile = tile_id | palbank;
 
+                    let x = (x as usize) * 8;
+                    let y = (y as usize) * 8;
+
                     if color_4bit {
                         if tile_id < 512 {
                             draw_tile_4bpp(
-                                vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
-                                tile,
+                                vram, palette, buffer, x, y, cbb_bytes, pitch, tile, false,
                             );
                         }
                     } else {
                         if tile_id < 256 {
-                            draw_tile_8bpp(
-                                vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch,
-                                tile,
-                            );
+                            draw_tile_8bpp(vram, palette, buffer, x, y, cbb_bytes, pitch, tile);
                         }
                     }
                 }
@@ -282,17 +381,51 @@ pub fn draw_mode0(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, textur
         .with_lock(None, |buffer: &mut [u8], pitch: usize| {
             for y in 0..height_tiles {
                 for x in 0..width_tiles {
-                    let tile = get_tile_from_vram(vram, x, y, screen_base_block);
+                    let tile = get_tile_from_vram(
+                        vram,
+                        x,
+                        y,
+                        (width_tiles, height_tiles),
+                        screen_base_block,
+                    );
+
+                    let x = (x as usize) * 8;
+                    let y = (y as usize) * 8;
 
                     if color_4bit {
-                        draw_tile_4bpp(
-                            vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch, tile,
-                        );
+                        draw_tile_4bpp(vram, palette, buffer, x, y, cbb_bytes, pitch, tile, false);
                     } else {
-                        draw_tile_8bpp(
-                            vram, palette, buffer, x as usize, y as usize, cbb_bytes, pitch, tile,
-                        );
+                        draw_tile_8bpp(vram, palette, buffer, x, y, cbb_bytes, pitch, tile);
                     }
+                }
+            }
+        })
+        .expect("[SDL] Cannot fill texture");
+}
+
+fn draw_rect_argb(
+    texture: &mut Texture,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    argb: u32,
+) {
+    let a = ((argb >> 24) & 0xFF) as u8;
+    let r = ((argb >> 16) & 0xFF) as u8;
+    let g = ((argb >> 8) & 0xFF) as u8;
+    let b = ((argb >> 0) & 0xFF) as u8;
+
+    texture
+        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in y..(y + height) {
+                for x in x..(x + width) {
+                    let offset = y * pitch + x * 4;
+
+                    buffer[offset] = a;
+                    buffer[offset + 1] = r;
+                    buffer[offset + 2] = g;
+                    buffer[offset + 3] = b;
                 }
             }
         })
@@ -439,7 +572,7 @@ pub fn render_background_to_canvas(
 }
 
 pub fn get_texture_dimensions(msg: &RenderMessage) -> (u16, u16) {
-    match msg.mode {
+    match msg.dispcnt & 0x7 {
         0 => {
             let screen_size = (msg.bg_control >> 14) & 0x3;
 
@@ -496,7 +629,8 @@ fn draw_mode4(texture: &mut Texture, msg: &RenderMessage, vram: &Vec<u8>, palett
                     let addr = base + (x + (y * 240));
                     let pixel = vram[addr];
 
-                    let (a, r, g, b) = get_palette_color(palette, msg.mode, pixel);
+                    let (a, r, g, b) =
+                        get_palette_color(palette, (msg.dispcnt & 0x7) as u8, pixel, false);
 
                     buffer[offset] = a;
                     buffer[offset + 1] = r;
@@ -550,7 +684,7 @@ pub fn draw_background(
     palette: &Vec<u8>,
     bg: u8,
 ) {
-    match msg.mode {
+    match msg.dispcnt & 0x7 {
         0 => draw_mode0(msg, vram, palette, texture),
         1 => fill_texture_argb(texture, 240, 160, 0xFFFF0000),
         2 => fill_texture_argb(texture, 240, 160, 0xFF00FF00),
@@ -558,6 +692,154 @@ pub fn draw_background(
         4 => draw_mode4(texture, msg, vram, palette),
         5 => draw_mode5(texture, msg, vram),
         _ => panic!("Unknown LCD BG mode"),
+    }
+}
+
+pub fn draw_and_render_sprites(
+    canvas: &mut Canvas<Window>,
+    texture: &mut Texture,
+    msg: &RenderMessage,
+    vram: &Vec<u8>,
+    palette: &Vec<u8>,
+    oam: &Vec<u8>,
+) {
+    let mapping_2d = msg.dispcnt & 0x40 == 0;
+
+    // TODO: Priority
+    for n in 0..128 {
+        let obj = get_obj_attr(oam, n);
+
+        let obj_mode = ((obj.attr0 >> 8) & 0x3) as u8;
+        let gfx_mode = ((obj.attr0 >> 10) & 0x3) as u8;
+
+        if obj_mode == 0b10 {
+            continue;
+        }
+
+        if obj_mode == 0b01 || obj_mode == 0b11 {
+            todo!("Todo, obj_mode={obj_mode:02b}");
+        }
+
+        if gfx_mode == 0b01 || obj_mode == 0b10 {
+            todo!("Todo, gfx_mode={gfx_mode:02b}");
+        }
+
+        // Attr0
+        let y = (obj.attr0 & 0xFF) as u32;
+        let ys = (y as i32).wrapping_shl(24).wrapping_shr(24);
+        let color_4bit = (obj.attr0 & 0x2000) == 0;
+        let affine = (obj.attr0 & 0x100) != 0;
+
+        // Attr1
+        let x = (obj.attr1 & 0x1FF) as u32;
+        let xs = (x as i32).wrapping_shl(23).wrapping_shr(23);
+        let horizontal_flip = (obj.attr1 & 0x1000) != 0;
+        let vertical_flip = (obj.attr1 & 0x2000) != 0;
+
+        let (width, height) = obj.get_size();
+        let (w_tiles, h_tiles) = (width / 8, height / 8);
+        let prio = obj.get_priority();
+
+        if !color_4bit {
+            todo!("Implement 8bpp sprite");
+        }
+
+        texture
+            .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+                let tile = obj.attr2 & 0xF3FF;
+
+                for tile_y in 0..h_tiles {
+                    for tile_x in 0..w_tiles {
+                        let tile = match mapping_2d {
+                            false => tile + ((tile_y * w_tiles) + tile_x) as u16,
+                            true => tile + ((tile_y * 32) + tile_x) as u16,
+                        };
+
+                        draw_tile_4bpp(
+                            vram,
+                            palette,
+                            buffer,
+                            tile_x * 8,
+                            tile_y * 8,
+                            0x10000,
+                            pitch,
+                            tile,
+                            true,
+                        );
+                    }
+                }
+            })
+            .expect("[SDL] Cannot fill texture");
+
+        // Check for wraparound on Y-axis, since max Y < screen height
+        if y + height as u32 > 160 && y < 160 {
+            let bot_height = (y + height as u32) - 160;
+            let top_height = height as u32 - bot_height;
+
+            let (dest_top, dest_bot) = match vertical_flip {
+                false => (
+                    Rect::new(x as i32, y as i32, width as u32, top_height),
+                    Rect::new(xs, ys + top_height as i32, width as u32, bot_height),
+                ),
+                true => (
+                    Rect::new(xs, ys + top_height as i32, width as u32, bot_height),
+                    Rect::new(x as i32, y as i32, width as u32, top_height),
+                ),
+            };
+
+            // Top part of sprite
+            canvas
+                .copy_ex(
+                    &texture,
+                    Rect::new(0, 0, width as u32, top_height),
+                    dest_top,
+                    0.0,
+                    Point::new(0, 0),
+                    horizontal_flip,
+                    vertical_flip,
+                )
+                .expect("[SDL] Cannot copy sprite");
+
+            // Bottom part of sprite
+            canvas
+                .copy_ex(
+                    &texture,
+                    Rect::new(0, top_height as i32, width as u32, bot_height),
+                    dest_bot,
+                    0.0,
+                    Point::new(0, 0),
+                    horizontal_flip,
+                    vertical_flip,
+                )
+                .expect("[SDL] Cannot copy sprite");
+        } else {
+            if !affine {
+                canvas
+                    .copy_ex(
+                        &texture,
+                        Rect::new(0, 0, width as u32, height as u32),
+                        Rect::new(xs, ys, width as u32, height as u32),
+                        0.0,
+                        Point::new(0, 0),
+                        horizontal_flip,
+                        vertical_flip,
+                    )
+                    .expect("[SDL] Cannot copy sprite");
+            } else {
+                println!("Implement affine sprites");
+                canvas
+                    .copy_ex(
+                        &texture,
+                        Rect::new(0, 0, width as u32, height as u32),
+                        Rect::new(xs, ys, width as u32, height as u32),
+                        0.0,
+                        Point::new(0, 0),
+                        false,
+                        false,
+                    )
+                    .expect("[SDL] Cannot copy sprite");
+            }
+        }
     }
 }
 
