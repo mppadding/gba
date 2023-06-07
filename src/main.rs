@@ -233,19 +233,24 @@ fn main() {
                         dbg.paused = true;
                         dbg.lockstep = true;
                     }
-                    WindowEvent::Dump(Dump::Video) => {
-                        println!("Dump VRAM");
-                        let mut file =
-                            File::create("dump/vram").expect("Could not create `dump/vram`");
+                    WindowEvent::Dump(d) => {
+                        let (file, data) = match d {
+                            Dump::Video => ("vram", cpu.ram_video.lock().unwrap()),
+                            Dump::Palette => ("pal", cpu.ram_palette.lock().unwrap()),
+                            _ => todo!("Implement dump {d:#?}"),
+                        };
 
-                        let vram = cpu.ram_video.lock().unwrap();
+                        println!("Dump {file}");
 
-                        file.write_all(&vram)
-                            .expect("Failed to write to `dump/vram`");
+                        // Dump to path
+                        let path = format!("dump/{file}");
+                        let mut file = File::create(&path).expect("Could not create `{path}`");
+                        file.write_all(&data).expect("Failed to write to `{path}`");
 
+                        // Create hex file
                         Command::new("sh")
                             .arg("-c")
-                            .arg("xxd dump/vram >| dump/vram.hex")
+                            .arg(format!("xxd {path} >| {path}.hex"))
                             .output()
                             .expect("Failed to execute xxd");
                     }

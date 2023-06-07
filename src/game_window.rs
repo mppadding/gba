@@ -147,11 +147,7 @@ impl GameWindow {
                     Keycode::Down => events.push(WindowEvent::ButtonPress(keypad::BUTTON_DOWN)),
                     Keycode::S => events.push(WindowEvent::ButtonPress(keypad::BUTTON_R)),
                     Keycode::A => events.push(WindowEvent::ButtonPress(keypad::BUTTON_L)),
-                    Keycode::P => {
-                        self.paused = !self.paused;
-                        info!("LCD Paused={}", self.paused);
-                        events.push(WindowEvent::Pause(self.paused));
-                    }
+                    Keycode::P => events.push(WindowEvent::Dump(Dump::Palette)),
                     Keycode::N => events.push(WindowEvent::NextVCount),
                     Keycode::R => events.push(WindowEvent::ForceRender),
                     Keycode::F1 => events.push(WindowEvent::Debug(1)),
