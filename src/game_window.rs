@@ -49,8 +49,14 @@ impl GameWindow {
             .video()
             .expect("[SDL] Failed to get video subsystem");
 
+        let width = 240;
+        let height = 160;
+
+        //let width = 512;
+        //let height = 512;
+
         let window = video_subsystem
-            .window("pGBA", 240, 160)
+            .window("pGBA", width, height)
             .opengl()
             .position(0, 0)
             .build()
@@ -83,26 +89,29 @@ impl GameWindow {
         /*
          * Draw BG 0
          */
-        let (bg0_w, bg0_h) = renderer::get_texture_dimensions(msg);
-        let mut bg0 = self
-            .texture_creator
-            .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w as u32, bg0_h as u32)
-            .map_err(|e| e.to_string())
-            .expect("[SDL] Cannot create texture");
+        if (msg.dispcnt & 0x0100) != 0 {
+            let (bg0_w, bg0_h) = renderer::get_texture_dimensions(msg);
+            let mut bg0 = self
+                .texture_creator
+                .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w as u32, bg0_h as u32)
+                .map_err(|e| e.to_string())
+                .expect("[SDL] Cannot create texture");
+            bg0.set_blend_mode(sdl2::render::BlendMode::Blend);
 
-        let (offset_x, offset_y) = msg.bg_offset;
-        renderer::draw_background(&mut bg0, msg, vram, palette, 0);
-        renderer::render_background_to_canvas(
-            &mut self.canvas,
-            &bg0,
-            &renderer::BackgroundMessage {
-                control: msg.bg_control,
-                offset_x,
-                offset_y,
-                width: bg0_w,
-                height: bg0_h,
-            },
-        );
+            let (offset_x, offset_y) = msg.bg_offset;
+            renderer::draw_background(&mut bg0, msg, vram, palette, 0);
+            renderer::render_background_to_canvas(
+                &mut self.canvas,
+                &bg0,
+                &renderer::BackgroundMessage {
+                    control: msg.bg_control,
+                    offset_x,
+                    offset_y,
+                    width: bg0_w,
+                    height: bg0_h,
+                },
+            );
+        }
 
         // Render to canvas
         self.canvas.present();

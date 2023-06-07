@@ -9,7 +9,7 @@ use sdl2::{
 
 #[derive(Debug)]
 pub struct RenderMessage {
-    pub mode: u8,
+    pub dispcnt: u16,
     pub frame: bool,
     pub bg_control: u16,
     pub bg_offset: (u16, u16),

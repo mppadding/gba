@@ -326,7 +326,7 @@ fn main() {
             if vcount == 0 {
                 game_tx
                     .send(RenderMessage {
-                        mode: cpu.lcd.get_dispcnt_mode(),
+                        dispcnt: cpu.lcd.get_dispcnt(),
                         frame: cpu.lcd.get_dispcnt_frame(),
                         bg_control: cpu.lcd.get_background_control(0),
                         bg_offset: cpu.lcd.get_background_offset(0),
