@@ -113,6 +113,24 @@ impl GameWindow {
             );
         }
 
+        // Sprites
+        if msg.dispcnt & 0x1000 != 0 {
+            let mut sprites = self
+                .texture_creator
+                .create_texture_streaming(PixelFormatEnum::BGRA8888, 128, 128)
+                .map_err(|e| e.to_string())
+                .expect("[SDL] Cannot create texture");
+            sprites.set_blend_mode(sdl2::render::BlendMode::Blend);
+            renderer::draw_and_render_sprites(
+                &mut self.canvas,
+                &mut sprites,
+                msg,
+                vram,
+                palette,
+                oam,
+            );
+        }
+
         // Render to canvas
         self.canvas.present();
     }
