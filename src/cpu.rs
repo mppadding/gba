@@ -33,6 +33,7 @@ pub struct CPU {
     pub regs_und: [u32; 2],   // R13, R14
     pub ram_work1: [u8; 256 * 1024],
     pub ram_work2: [u8; 32 * 1024],
+    pub ram_sram: [u8; 64 * 1024],
     pub ram_palette: Arc<Mutex<Vec<u8>>>,
     pub ram_video: Arc<Mutex<Vec<u8>>>,
     pub ram_obj_attr: Arc<Mutex<Vec<u8>>>,
@@ -127,6 +128,7 @@ impl MMU for CPU {
             0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
                 self.rom[offset]
             }
+            0x0E000000..=0x0E00FFFF => self.ram_sram[offset],
             _ => {
                 if INTERNAL_PANIC {
                     error!(
@@ -403,6 +405,7 @@ impl MMU for CPU {
             } //self.bios[addr] = val,
             0x02000000..=0x0203FFFF => self.ram_work1[offset] = val,
             0x03000000..=0x03007FFF => self.ram_work2[offset] = val,
+            0x03FFFF00..=0x03FFFFFF => self.ram_work2[(offset & 0xFF) | 0x7F00] = val,
             0x04000000..=0x040003FE => {
                 warn!("Write8 to IO register `{:08X} = {:02X}`", addr, val);
 
@@ -443,6 +446,7 @@ impl MMU for CPU {
                     self.panic = true;
                 }
             }
+            0x0E000000..=0x0E00FFFF => self.ram_sram[offset] = val,
             _ => {
                 if INTERNAL_PANIC {
                     error!(
@@ -674,7 +678,8 @@ impl MMU for CPU {
             | (0x07000000..=0x070003FF)
             | (0x08000000..=0x09FFFFFC)
             | (0x0A000000..=0x0BFFFFFC)
-            | (0x0C000000..=0x0DFFFFFC) => true,
+            | (0x0C000000..=0x0DFFFFFC)
+            | (0x0E000000..=0x0E00FFFF) => true,
             _ => false,
         }
     }
@@ -772,6 +777,7 @@ impl CPU {
             ram_palette: Arc::clone(palette),
             ram_video: Arc::clone(vram),
             ram_obj_attr: Arc::clone(oam),
+            ram_sram: [0; 64 * 1024],
             panic: false,
             rom: Vec::new(),
             bios: Vec::new(),
