@@ -421,9 +421,6 @@ fn main() {
         } else {
             cpu.lcd.set_dispstat_hblank(true); // Hblank
             if dbg.free_run && cpu.can_irq_trigger(cpu::IRQ_HBLANK) {
-                //dbg.lockstep = true;
-                //dbg.paused = true;
-                //dbg.free_run = false;
                 warn!("HBlank IRQ Triggered");
 
                 cpu.trigger_irq(cpu::IRQ_HBLANK);
