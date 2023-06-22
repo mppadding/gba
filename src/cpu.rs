@@ -1267,6 +1267,15 @@ impl CPU {
         self.write_register(2, res_abs as u32);
     }
 
+    // SWI 0x08
+    fn syscall_sqrt(&mut self) {
+        let val = self.read_register(0) as f32;
+
+        info!("HLE: executing syscall `Sqrt` with `{val}`");
+
+        self.write_register(0, val.sqrt() as u32);
+    }
+
     // SWI 0x0B
     fn syscall_cpu_set(&mut self) {
         let rs_val = self.read_register(0);
@@ -1284,7 +1293,11 @@ impl CPU {
 
         if fill {
             if !word {
-                todo!("Implement CpuSet::fill halfword");
+                let val = self.read_u16(true, rs_val);
+                for i in 0..count {
+                    let offset = i * 2;
+                    self.write_u16(true, rd_val + offset, val);
+                }
             } else {
                 let val = self.read_u32(true, rs_val);
                 for i in 0..count {
@@ -1294,7 +1307,11 @@ impl CPU {
             }
         } else {
             if !word {
-                todo!("Implement CpuSet::copy halfword");
+                for i in 0..count {
+                    let offset = i * 2;
+                    let val = self.read_u16(true, rs_val + offset);
+                    self.write_u16(true, rd_val + offset, val);
+                }
             } else {
                 for i in 0..count {
                     let offset = i * 4;
@@ -1332,6 +1349,24 @@ impl CPU {
         }
     }
 
+    // SWI 0x0F
+    fn syscall_obj_affine_set(&mut self) {
+        let src_addr = self.read_register(0);
+        let dest_addr = self.read_register(1);
+        let num_calc = self.read_register(2);
+        let offset = self.read_register(3);
+
+        todo!("Implement ObjAffineSet");
+    }
+
+    // SWI 0x12
+    fn syscall_lz77_uncomp_read_normal_write_16bit_vram(&mut self) {
+        let src_addr = self.read_register(0);
+        let dest_addr = self.read_register(1);
+
+        todo!("Implement LZ7UnCompReadNormalWrite16bit");
+    }
+
     // SWI 0x15
     fn syscall_rl_uncomp_read_normal_write_16bit_vram(&mut self) {
         let src_addr = self.read_register(0);
@@ -1348,8 +1383,11 @@ impl CPU {
             0x05 => self.syscall_vblank_intr_wait(),
             0x06 => self.syscall_div(),
             0x07 => self.syscall_div_arm(),
+            0x08 => self.syscall_sqrt(),
             0x0B => self.syscall_cpu_set(),
             0x0C => self.syscall_cpu_fast_set(),
+            0x0F => self.syscall_obj_affine_set(),
+            0x12 => self.syscall_lz77_uncomp_read_normal_write_16bit_vram(),
             0x15 => self.syscall_rl_uncomp_read_normal_write_16bit_vram(),
             _ => panic!("Unknown BIOS syscall `{:02X}h`", syscall),
         }
@@ -4431,5 +4469,17 @@ mod tests {
         cpu.write_register(rn, 1);
         cpu.execute_arm(opcode_mla);
         assert_eq!(cpu.read_register(rd), 0xFFFFFF39);
+    }
+
+    #[test]
+    fn syscall_sqrt() {
+        let vram = Arc::new(Mutex::new(vec![0; 96 * 1024]));
+        let palette = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let oam = Arc::new(Mutex::new(vec![0; 1 * 1024]));
+        let mut cpu = CPU::new(&vram, &palette, &oam);
+
+        cpu.write_register(0, 2);
+        cpu.syscall_sqrt();
+        assert_eq!(cpu.read_register(0), 1);
     }
 }
