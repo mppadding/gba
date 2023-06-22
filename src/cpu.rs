@@ -150,80 +150,12 @@ impl MMU for CPU {
     }
 
     fn read_u16(&mut self, intern: bool, addr: u32) -> u16 {
-        let addr = addr & 0x0FFFFFFF;
-
-        if intern {
-            self.mem_ptr = addr;
-
-            if addr < 0x00003FFF {
-                panic!("In bios `{:08X}`", addr);
-            }
-        }
-
-        let offset = (addr & 0x00FFFFFF) as usize;
-
         match addr {
-            0x00000000..=0x00003FFF => {
-                //((self.bios[addr + 3] as u32) << 24)
-                //    | ((self.bios[addr + 2] as u32) << 16)
-                //    | ((self.bios[addr + 1] as u32) << 8)
-                //    | (self.bios[addr] as u32)
-                0
-            }
-            0x02000000..=0x0203FFFF => {
-                ((self.ram_work1[offset + 1] as u16) << 8) | (self.ram_work1[offset] as u16)
-            }
-            0x03000000..=0x03007FFF => {
-                ((self.ram_work2[offset + 1] as u16) << 8) | (self.ram_work2[offset] as u16)
-            }
-            0x04000000..=0x040003FE => {
-                if intern {
-                    warn!("Read16 from IO register `{:08X}`", addr);
-                }
-
-                let io_addr = addr & 0x3FF;
-
-                match io_addr {
-                    0x00 => self.lcd.get_dispcnt(),
-                    _ => {
-                        if intern {
-                            panic!("Read16 from unimplemented IO register `{:08X}`", addr)
-                        }
-                        0
-                    }
-                }
-            }
-            0x05000000..=0x050003FF => {
-                let palette = self.ram_palette.lock().unwrap();
-                ((palette[offset + 1] as u16) << 8) | (palette[offset] as u16)
-            }
-            0x06000000..=0x06017FFF => {
-                let vram = self.ram_video.lock().unwrap();
-                ((vram[offset + 1] as u16) << 8) | (vram[offset] as u16)
-            }
-            0x07000000..=0x070003FF => {
-                let oam = self.ram_obj_attr.lock().unwrap();
-                ((oam[offset + 1] as u16) << 8) | (oam[offset] as u16)
-            }
-            0x08000000..=0x09FFFFFF | 0x0A000000..=0x0BFFFFFF | 0x0C000000..=0x0DFFFFFF => {
-                ((self.rom[offset + 1] as u16) << 8) | (self.rom[offset] as u16)
-            }
             _ => {
-                if INTERNAL_PANIC {
-                    error!(
-                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                    self.panic = true;
-                } else {
-                    panic!(
-                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                }
-                0
+                let low = self.read_u8(intern, addr) as u16;
+                let high = self.read_u8(intern, addr + 1) as u16;
+
+                (high << 8) | low
             }
         }
     }
@@ -246,32 +178,7 @@ impl MMU for CPU {
         let offset = (addr & 0x00FFFFFF) as usize;
 
         match addr {
-            0x00000000..=0x00003FFF => {
-                ((self.bios[offset + 3] as u32) << 24)
-                    | ((self.bios[offset + 2] as u32) << 16)
-                    | ((self.bios[offset + 1] as u32) << 8)
-                    | (self.bios[offset] as u32)
-            }
-            0x02000000..=0x0203FFFF => {
-                ((self.ram_work1[offset + 3] as u32) << 24)
-                    | ((self.ram_work1[offset + 2] as u32) << 16)
-                    | ((self.ram_work1[offset + 1] as u32) << 8)
-                    | (self.ram_work1[offset] as u32)
-            }
             0x03007FF8 => self.io_bios_if as u32,
-            0x03000000..=0x03007FFF => {
-                ((self.ram_work2[offset + 3] as u32) << 24)
-                    | ((self.ram_work2[offset + 2] as u32) << 16)
-                    | ((self.ram_work2[offset + 1] as u32) << 8)
-                    | (self.ram_work2[offset] as u32)
-            }
-            0x03FFFF00..=0x03FFFFFF => {
-                let offset = (offset & 0x000000FF) | 0x00007F00;
-                ((self.ram_work2[offset + 3] as u32) << 24)
-                    | ((self.ram_work2[offset + 2] as u32) << 16)
-                    | ((self.ram_work2[offset + 1] as u32) << 8)
-                    | (self.ram_work2[offset] as u32)
-            }
             0x04000000..=0x040003FE => {
                 if intern {
                     warn!("Read32 from IO register `{:08X}`", addr);
@@ -338,27 +245,6 @@ impl MMU for CPU {
                     }
                 }
             }
-            0x05000000..=0x050003FF => {
-                let palette = self.ram_palette.lock().unwrap();
-                ((palette[offset + 3] as u32) << 24)
-                    | ((palette[offset + 2] as u32) << 16)
-                    | ((palette[offset + 1] as u32) << 8)
-                    | (palette[offset] as u32)
-            }
-            0x06000000..=0x06017FFF => {
-                let vram = self.ram_video.lock().unwrap();
-                ((vram[offset + 3] as u32) << 24)
-                    | ((vram[offset + 2] as u32) << 16)
-                    | ((vram[offset + 1] as u32) << 8)
-                    | (vram[offset] as u32)
-            }
-            0x07000000..=0x070003FF => {
-                let oam = self.ram_obj_attr.lock().unwrap();
-                ((oam[offset + 3] as u32) << 24)
-                    | ((oam[offset + 2] as u32) << 16)
-                    | ((oam[offset + 1] as u32) << 8)
-                    | (oam[offset] as u32)
-            }
             0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
                 ((self.rom[offset + 3] as u32) << 24)
                     | ((self.rom[offset + 2] as u32) << 16)
@@ -366,21 +252,12 @@ impl MMU for CPU {
                     | (self.rom[offset] as u32)
             }
             _ => {
-                if INTERNAL_PANIC {
-                    error!(
-                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                    self.panic = true;
-                } else {
-                    panic!(
-                        "[0x{:08X}] Panicked! Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                }
-                0
+                let b0 = self.read_u8(intern, addr + 0) as u32;
+                let b1 = self.read_u8(intern, addr + 1) as u32;
+                let b2 = self.read_u8(intern, addr + 2) as u32;
+                let b3 = self.read_u8(intern, addr + 3) as u32;
+
+                (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
             }
         }
     }
@@ -496,31 +373,12 @@ impl MMU for CPU {
         let b0 = (val & 0xFF) as u8;
 
         match addr {
-            0x02000000..=0x0203FFFF => {
-                self.ram_work1[offset + 3] = b3;
-                self.ram_work1[offset + 2] = b2;
-                self.ram_work1[offset + 1] = b1;
-                self.ram_work1[offset] = b0;
-            }
             0x03007FF8 => {
                 let mask = (val & 0xFFFF) as u16;
                 self.io_bios_if &= !mask;
                 if intern {
                     warn!("Clearing flags={mask:04X} in BIOS_IF");
                 }
-            }
-            0x03000000..=0x03007FFF => {
-                self.ram_work2[offset + 3] = b3;
-                self.ram_work2[offset + 2] = b2;
-                self.ram_work2[offset + 1] = b1;
-                self.ram_work2[offset] = b0;
-            }
-            0x03FFFF00..=0x03FFFFFF => {
-                let offset = (offset & 0x000000FF) | 0x00007F00;
-                self.ram_work2[offset + 3] = b3;
-                self.ram_work2[offset + 2] = b2;
-                self.ram_work2[offset + 1] = b1;
-                self.ram_work2[offset] = b0;
             }
             0x04000000..=0x040003FE => {
                 if intern {
@@ -606,27 +464,6 @@ impl MMU for CPU {
                     }
                 }
             }
-            0x05000000..=0x050003FF => {
-                let mut palette = self.ram_palette.lock().unwrap();
-                palette[offset + 3] = ((val >> 24) & 0xFF) as u8;
-                palette[offset + 2] = ((val >> 16) & 0xFF) as u8;
-                palette[offset + 1] = ((val >> 8) & 0xFF) as u8;
-                palette[offset] = (val & 0xFF) as u8;
-            }
-            0x06000000..=0x06017FFF => {
-                let mut vram = self.ram_video.lock().unwrap();
-                vram[offset + 3] = b3;
-                vram[offset + 2] = b2;
-                vram[offset + 1] = b1;
-                vram[offset] = b0;
-            }
-            0x07000000..=0x070003FF => {
-                let mut oam = self.ram_obj_attr.lock().unwrap();
-                oam[offset + 3] = ((val >> 24) & 0xFF) as u8;
-                oam[offset + 2] = ((val >> 16) & 0xFF) as u8;
-                oam[offset + 1] = ((val >> 8) & 0xFF) as u8;
-                oam[offset] = (val & 0xFF) as u8;
-            }
             0x08000000..=0x09FFFFFC | 0x0A000000..=0x0BFFFFFC | 0x0C000000..=0x0DFFFFFC => {
                 if ROM_WRITING {
                     warn!("Write32 to ROM `{:08X} => {:08X}`", addr, val);
@@ -643,20 +480,10 @@ impl MMU for CPU {
                 }
             }
             _ => {
-                if INTERNAL_PANIC {
-                    error!(
-                        "[0x{:08X}] Panicked! Write32 Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                    self.panic = true;
-                } else {
-                    panic!(
-                        "[0x{:08X}] Panicked! Write32 Address out of range `{:08X}`",
-                        self.get_program_counter(),
-                        addr
-                    );
-                }
+                self.write_u8(intern, addr + 0, b0);
+                self.write_u8(intern, addr + 1, b1);
+                self.write_u8(intern, addr + 2, b2);
+                self.write_u8(intern, addr + 3, b3);
             }
         }
     }
