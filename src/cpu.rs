@@ -1695,9 +1695,9 @@ impl CPU {
 
                 let (_, n, z, c, v) = self.alu(ALU_CMP, rd_val, rs_val);
                 self.set_flag_n(n);
-                self.set_flag_n(z);
-                self.set_flag_n(c);
-                self.set_flag_n(v);
+                self.set_flag_z(z);
+                self.set_flag_c(c);
+                self.set_flag_v(v);
                 0
             }
             0x2 => {
