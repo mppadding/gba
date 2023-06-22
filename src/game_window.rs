@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use log::info;
 use sdl2::{
     event::Event,
@@ -94,10 +96,32 @@ impl GameWindow {
 
         let mode = msg.dispcnt & 0x7;
 
+        // (bg num, priority)
+        let mut bg_order: [(u8, u8); 4] = [
+            (0, (msg.backgrounds[0].control & 0b11) as u8),
+            (1, (msg.backgrounds[1].control & 0b11) as u8),
+            (2, (msg.backgrounds[2].control & 0b11) as u8),
+            (3, (msg.backgrounds[3].control & 0b11) as u8),
+        ];
+
+        bg_order.sort_by(|a, b| {
+            if a.1 > b.1 {
+                Ordering::Greater
+            } else if a.1 < b.1 {
+                Ordering::Less
+            } else {
+                if a.0 > b.0 {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+        });
+
         /*
          * Draw BG 0
          */
-        for i in 0..4 {
+        for (i, _) in bg_order {
             // Only draw if BG is on in DISPCNT
             if (msg.dispcnt & (0x0100 << i)) == 0 {
                 continue;
@@ -114,9 +138,9 @@ impl GameWindow {
                 (_, _) => continue,
             }
 
-            let (width, height) = renderer::get_texture_dimensions(msg, i);
-            msg.backgrounds[i].width = width;
-            msg.backgrounds[i].height = height;
+            let (width, height) = renderer::get_texture_dimensions(msg, i as usize);
+            msg.backgrounds[i as usize].width = width;
+            msg.backgrounds[i as usize].height = height;
 
             let mut bg = self
                 .texture_creator
@@ -126,7 +150,11 @@ impl GameWindow {
             bg.set_blend_mode(sdl2::render::BlendMode::Blend);
 
             renderer::draw_background(&mut bg, msg, vram, palette, 0);
-            renderer::render_background_to_canvas(&mut self.canvas, &bg, &msg.backgrounds[i]);
+            renderer::render_background_to_canvas(
+                &mut self.canvas,
+                &bg,
+                &msg.backgrounds[i as usize],
+            );
         }
 
         // Sprites
