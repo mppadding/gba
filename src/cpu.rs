@@ -1163,16 +1163,20 @@ impl CPU {
             dest_addr, src_addr, count, fill
         );
 
-        if fill {
-            if count % 8 != 0 {
-                panic!("CpuFastSet: Count should be multiple of 8");
-            }
+        if count % 8 != 0 {
+            panic!("CpuFastSet: Count should be multiple of 8");
+        }
 
+        if fill {
             let val = self.read_u32(true, src_addr);
 
             self.memfill32(dest_addr, val, count);
         } else {
-            todo!("Implement Copy CpuFastSet");
+            for i in 0..count {
+                let offset = i * 4;
+                let val = self.read_u32(true, src_addr + offset);
+                self.write_u32(true, dest_addr + offset, val);
+            }
         }
     }
 
