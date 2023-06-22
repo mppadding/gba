@@ -4,7 +4,7 @@ use sdl2::{
     keyboard::Keycode,
     pixels::PixelFormatEnum,
     rect::Rect,
-    render::{Canvas, TextureCreator},
+    render::{Canvas, Texture, TextureCreator},
     video::{Window, WindowContext},
     EventPump,
 };
@@ -13,13 +13,6 @@ use crate::{
     keypad,
     renderer::{self, RenderMessage},
 };
-
-pub struct GameWindow {
-    canvas: Canvas<Window>,
-    pub texture_creator: TextureCreator<WindowContext>,
-    pub event_pump: EventPump,
-    pub paused: bool,
-}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Dump {
@@ -40,6 +33,13 @@ pub enum WindowEvent {
     Debug(u8),
     Dump(Dump),
     ForceRender,
+}
+
+pub struct GameWindow {
+    canvas: Canvas<Window>,
+    pub texture_creator: TextureCreator<WindowContext>,
+    pub event_pump: EventPump,
+    pub paused: bool,
 }
 
 impl GameWindow {
@@ -83,34 +83,50 @@ impl GameWindow {
         }
     }
 
-    pub fn draw(&mut self, msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, oam: &Vec<u8>) {
+    pub fn draw(
+        &mut self,
+        msg: &mut RenderMessage,
+        vram: &Vec<u8>,
+        palette: &Vec<u8>,
+        oam: &Vec<u8>,
+    ) {
         self.canvas.clear();
+
+        let mode = msg.dispcnt & 0x7;
 
         /*
          * Draw BG 0
          */
-        if (msg.dispcnt & 0x0100) != 0 {
-            let (bg0_w, bg0_h) = renderer::get_texture_dimensions(msg);
-            let mut bg0 = self
+        for i in 0..4 {
+            // Only draw if BG is on in DISPCNT
+            if (msg.dispcnt & (0x0100 << i)) == 0 {
+                continue;
+            }
+
+            // Not every background is enabled in every mode
+            match (mode, i) {
+                (0, _) => {}
+                (1, 0) | (1, 1) | (1, 2) => {}
+                (2, 2) | (2, 3) => {}
+                (3, 2) => {}
+                (4, 2) => {}
+                (5, 2) => {}
+                (_, _) => continue,
+            }
+
+            let (width, height) = renderer::get_texture_dimensions(msg, i);
+            msg.backgrounds[i].width = width;
+            msg.backgrounds[i].height = height;
+
+            let mut bg = self
                 .texture_creator
-                .create_texture_streaming(PixelFormatEnum::BGRA8888, bg0_w as u32, bg0_h as u32)
+                .create_texture_streaming(PixelFormatEnum::BGRA8888, width as u32, height as u32)
                 .map_err(|e| e.to_string())
                 .expect("[SDL] Cannot create texture");
-            bg0.set_blend_mode(sdl2::render::BlendMode::Blend);
+            bg.set_blend_mode(sdl2::render::BlendMode::Blend);
 
-            let (offset_x, offset_y) = msg.bg_offset;
-            renderer::draw_background(&mut bg0, msg, vram, palette, 0);
-            renderer::render_background_to_canvas(
-                &mut self.canvas,
-                &bg0,
-                &renderer::BackgroundMessage {
-                    control: msg.bg_control,
-                    offset_x,
-                    offset_y,
-                    width: bg0_w,
-                    height: bg0_h,
-                },
-            );
+            renderer::draw_background(&mut bg, msg, vram, palette, 0);
+            renderer::render_background_to_canvas(&mut self.canvas, &bg, &msg.backgrounds[i]);
         }
 
         // Sprites

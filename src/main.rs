@@ -2,7 +2,7 @@ use std::backtrace::Backtrace;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
-use std::process::Command;
+use std::process::{exit, Command};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 use std::{panic, thread};
@@ -16,7 +16,7 @@ use crate::backtrace::PC_BACKTRACE;
 use crate::cpu::CPU;
 use crate::debugger::{Breakpoint, DebuggerEvent};
 use crate::game_window::{Dump, GameWindow, WindowEvent};
-use crate::renderer::RenderMessage;
+use crate::renderer::{BackgroundMessage, RenderMessage};
 
 mod backtrace;
 mod cpu;
@@ -46,45 +46,82 @@ fn main() {
     cpu.reset();
     cpu.load_bios(&std::fs::read("bios/gba_bios.bin").unwrap());
 
+    /* Halt ROM */
+    //let rom: Vec<u8> = vec![0xFE, 0xFF, 0xFF, 0xEA];
+
     /* Games */
+    // Implement CpuSet::fill halfword
     //let rom = std::fs::read("roms/pokemon_emerald.gba").unwrap();
-    let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance2.gba").unwrap();
     //let rom = std::fs::read("roms/super_mario_advance4.gba").unwrap();
     //let rom = std::fs::read("roms/mario_kart_super_circuit.gba").unwrap();
+
+    // Super Dodgeball Advance:
+    //      - Next step: Get past title screen :D
+    //      - ATLUS should fade-in
+    let rom = std::fs::read("roms/super_dodgeball_advance.gba").unwrap();
 
     /* Test ROMs */
     //let rom = std::fs::read("roms/rgb_test.gba").unwrap();
     //let rom = std::fs::read("roms/CPUTest.gba").unwrap();
 
+    //let rom = std::fs::read("../gba_suite/deploy/suite.gba").unwrap();
+
+    // SWI_VSYNC:
+    //      obj_mode=11
+    //let rom = std::fs::read("roms/tonc/swi_vsync.gba").unwrap();
+
+    // BIG_MAP:
+    //let rom = std::fs::read("roms/tonc/bigmap.gba").unwrap();
+
+    // BLD_DEMO:
+    //      Requires GFX_MODE=01 for sprites
+    //let rom = std::fs::read("roms/tonc/bld_demo.gba").unwrap();
+
+    // DMA_DEMO:
+    //      - 'not yet implemented: Check HBlank DMA start timing => DMA3', src/cpu.rs:1037:25
+    //let rom = std::fs::read("roms/tonc/dma_demo.gba").unwrap();
+
+    //let rom = std::fs::read("roms/tonc/swi_demo.gba").unwrap();
+
+    //let rom = std::fs::read("roms/tonc/tmr_demo.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/txt_obj.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/txt_se1.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/txt_se2.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/win_demo.gba").unwrap();
+
     /* TONC */
-    // BM_MODES:
-    //      - Mode 3 rendering works
-    //      - mode swap using left/right does not work -> Keys are read though & work in key_demo
-    //      - Mode 4 works
-    //      - Mode 5 works
-    //      - Wrong colors in palette?
-    //
-    //let rom = std::fs::read("roms/tonc/bm_modes.gba").unwrap();
-
     // IRQ_DEMO:
-    //      - Crashes at 0x080063C0
-    let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
+    //      - Crashes on press X => A button
+    //          panicked at 'not yet implemented: Halfword Data Transfer: register offset', src/cpu.rs:3093:21
+    //          Should swap between (red, descending) and (green, ascending)
+    //      - Nothing happens on press Z => B button
+    //          Should switch priorities of HBlank and VCount
+    //      - No rendering of interrupts
+    //      - Wrong rendering of text
+    //let rom = std::fs::read("roms/tonc/irq_demo.gba").unwrap();
 
+    // TTE_DEMO:
+    //      - Requires SWI 15h
+    //let rom = std::fs::read("roms/tonc/tte_demo.gba").unwrap();
+
+    // TXT_BM:
     //let rom = std::fs::read("roms/tonc/txt_bm.gba").unwrap();
 
-    // M3_DEMO:
-    //      - Missing cyan box around top right rectangle.
-    //      - Missing purple lines in top right of top right rectangle
-    //      - Missing yellow box around bottom left rectangle.
-    //      - Missing cyan lines in bottom left rectangle
-    //      - Missing black border in center rectangle
-    //let rom = std::fs::read("roms/tonc/m3_demo.gba").unwrap();
+    // SBB_REG:
+    //      - Sprite being rendered
+    //          Apparently sprites are turned on in DISPCNT
+    //          and OAM is not cleared, which means
+    //          that every sprite will be rendered.
+    //let rom = std::fs::read("roms/tonc/sbb_reg.gba").unwrap();
 
     /* Working ROMs */
     //let rom = std::fs::read("roms/tonc/key_demo.gba").unwrap();
-    let rom = std::fs::read("roms/tonc/pageflip.gba").unwrap();
-
+    //let rom = std::fs::read("roms/tonc/pageflip.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/bm_modes.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/m3_demo.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/brin_demo.gba").unwrap();
+    //let rom = std::fs::read("roms/tonc/obj_demo.gba").unwrap();
     cpu.load_rom(&rom.clone());
 
     let mut dbg = Debugger::new();
@@ -111,10 +148,10 @@ fn main() {
                 win_tx.send(events).unwrap();
             }
 
-            if let Ok(msg) = game_rx.try_recv() {
+            if let Ok(mut msg) = game_rx.try_recv() {
                 if !window.paused {
                     window.draw(
-                        &msg,
+                        &mut msg,
                         &vram.lock().unwrap(),
                         &palette.lock().unwrap(),
                         &oam.lock().unwrap(),
@@ -328,8 +365,32 @@ fn main() {
                     .send(RenderMessage {
                         dispcnt: cpu.lcd.get_dispcnt(),
                         frame: cpu.lcd.get_dispcnt_frame(),
-                        bg_control: cpu.lcd.get_background_control(0),
-                        bg_offset: cpu.lcd.get_background_offset(0),
+                        backgrounds: [
+                            BackgroundMessage {
+                                control: cpu.lcd.get_background_control(0),
+                                offset: cpu.lcd.get_background_offset(0),
+                                width: 0,
+                                height: 0,
+                            },
+                            BackgroundMessage {
+                                control: cpu.lcd.get_background_control(1),
+                                offset: cpu.lcd.get_background_offset(1),
+                                width: 0,
+                                height: 0,
+                            },
+                            BackgroundMessage {
+                                control: cpu.lcd.get_background_control(2),
+                                offset: cpu.lcd.get_background_offset(2),
+                                width: 0,
+                                height: 0,
+                            },
+                            BackgroundMessage {
+                                control: cpu.lcd.get_background_control(3),
+                                offset: cpu.lcd.get_background_offset(3),
+                                width: 0,
+                                height: 0,
+                            },
+                        ],
                     })
                     .unwrap();
             } else if vcount == 160 {

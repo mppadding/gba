@@ -10,15 +10,14 @@ use sdl2::{
 pub struct RenderMessage {
     pub dispcnt: u16,
     pub frame: bool,
-    pub bg_control: u16,
-    pub bg_offset: (u16, u16),
+    pub backgrounds: [BackgroundMessage; 4],
 }
 
 #[derive(Debug)]
 pub struct BackgroundMessage {
     pub control: u16,
-    pub offset_x: u16,
-    pub offset_y: u16,
+    pub offset: (u16, u16),
+    // TODO: Refactor width/height out of this struct
     pub width: u16,
     pub height: u16,
 }
@@ -54,16 +53,8 @@ impl ObjectAttributes {
         }
     }
 
-    fn get_tile_id(&self) -> u16 {
-        self.attr2 & 0x3FF
-    }
-
     fn get_priority(&self) -> u8 {
         ((self.attr2 >> 10) & 0x3) as u8
-    }
-
-    fn get_palbank(&self) -> u8 {
-        (self.attr2 >> 12) as u8
     }
 }
 
@@ -295,67 +286,72 @@ fn get_tile_from_vram(
     ((vram[map_addr + 1] as u16) << 8) | vram[map_addr] as u16
 }
 
-fn draw_tilemap(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture: &mut Texture) {
-    let character_base_block = ((msg.bg_control >> 2) & 0x3) as u32;
-    let color_4bit = (msg.bg_control & 0x80) == 0x0;
+//fn draw_tilemap(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture: &mut Texture) {
+//    let character_base_block = ((msg.bg_control >> 2) & 0x3) as u32;
+//    let color_4bit = (msg.bg_control & 0x80) == 0x0;
+//
+//    let cbb_bytes = (character_base_block * 16 * 1024) as usize;
+//
+//    let palbank = 0;
+//
+//    texture
+//        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+//            for y in 0..160 {
+//                for x in 0..240 {
+//                    let offset = y * pitch + x * 4;
+//
+//                    buffer[offset] = 0xFF;
+//                    buffer[offset + 1] = 0x00;
+//                    buffer[offset + 2] = 0x00;
+//                    buffer[offset + 3] = 0x00;
+//                }
+//            }
+//        })
+//        .expect("[SDL] Cannot fill texture");
+//
+//    texture
+//        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
+//            let max_y = match color_4bit {
+//                false => 8,
+//                true => 16,
+//            };
+//
+//            for y in 0..max_y {
+//                for x in 0..8 {
+//                    let tile_id = ((y * 30) + x) & 0x3FF;
+//                    let tile = tile_id | palbank;
+//
+//                    let x = (x as usize) * 8;
+//                    let y = (y as usize) * 8;
+//
+//                    if color_4bit {
+//                        if tile_id < 512 {
+//                            draw_tile_4bpp(
+//                                vram, palette, buffer, x, y, cbb_bytes, pitch, tile, false,
+//                            );
+//                        }
+//                    } else {
+//                        if tile_id < 256 {
+//                            draw_tile_8bpp(vram, palette, buffer, x, y, cbb_bytes, pitch, tile);
+//                        }
+//                    }
+//                }
+//            }
+//        })
+//        .expect("[SDL] Cannot fill texture");
+//}
 
-    let cbb_bytes = (character_base_block * 16 * 1024) as usize;
-
-    let palbank = 0;
-
-    texture
-        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
-            for y in 0..160 {
-                for x in 0..240 {
-                    let offset = y * pitch + x * 4;
-
-                    buffer[offset] = 0xFF;
-                    buffer[offset + 1] = 0x00;
-                    buffer[offset + 2] = 0x00;
-                    buffer[offset + 3] = 0x00;
-                }
-            }
-        })
-        .expect("[SDL] Cannot fill texture");
-
-    texture
-        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
-            let max_y = match color_4bit {
-                false => 8,
-                true => 16,
-            };
-
-            for y in 0..max_y {
-                for x in 0..8 {
-                    let tile_id = ((y * 30) + x) & 0x3FF;
-                    let tile = tile_id | palbank;
-
-                    let x = (x as usize) * 8;
-                    let y = (y as usize) * 8;
-
-                    if color_4bit {
-                        if tile_id < 512 {
-                            draw_tile_4bpp(
-                                vram, palette, buffer, x, y, cbb_bytes, pitch, tile, false,
-                            );
-                        }
-                    } else {
-                        if tile_id < 256 {
-                            draw_tile_8bpp(vram, palette, buffer, x, y, cbb_bytes, pitch, tile);
-                        }
-                    }
-                }
-            }
-        })
-        .expect("[SDL] Cannot fill texture");
-}
-
-pub fn draw_mode0(msg: &RenderMessage, vram: &Vec<u8>, palette: &Vec<u8>, texture: &mut Texture) {
-    let character_base_block = ((msg.bg_control >> 2) & 0x3) as u32;
-    let mosaic = (msg.bg_control & 0x40) != 0x00;
-    let color_4bit = (msg.bg_control & 0x80) == 0x0;
-    let screen_base_block = ((msg.bg_control >> 8) & 0x1F) as u32;
-    let screen_size = (msg.bg_control >> 14) & 0x3;
+pub fn draw_mode0(
+    msg: &BackgroundMessage,
+    vram: &Vec<u8>,
+    palette: &Vec<u8>,
+    texture: &mut Texture,
+) {
+    let character_base_block = ((msg.control >> 2) & 0x3) as u32;
+    let mosaic = (msg.control & 0x40) != 0x00;
+    let color_4bit = (msg.control & 0x80) == 0x0;
+    let screen_base_block = ((msg.control >> 8) & 0x1F) as u32;
+    let screen_size = (msg.control >> 14) & 0x3;
 
     let cbb_bytes = (character_base_block * 16 * 1024) as usize;
 
@@ -475,8 +471,8 @@ fn split_texture_rects(
     Option<(Rect, Rect)>,
     (Rect, Rect),
 ) {
-    let offset_x = msg.offset_x % msg.width;
-    let offset_y = msg.offset_y % msg.height;
+    let offset_x = msg.offset.0 % msg.width;
+    let offset_y = msg.offset.1 % msg.height;
 
     let width = msg.width as u32;
     let height = msg.height as u32;
@@ -571,10 +567,10 @@ pub fn render_background_to_canvas(
         .expect("[SDL] Cannot copy background0");
 }
 
-pub fn get_texture_dimensions(msg: &RenderMessage) -> (u16, u16) {
+pub fn get_texture_dimensions(msg: &RenderMessage, background: usize) -> (u16, u16) {
     match msg.dispcnt & 0x7 {
         0 => {
-            let screen_size = (msg.bg_control >> 14) & 0x3;
+            let screen_size = (msg.backgrounds[background].control >> 14) & 0x3;
 
             // Affinite? Gets textures up to 1024x1024
 
@@ -682,10 +678,10 @@ pub fn draw_background(
     msg: &RenderMessage,
     vram: &Vec<u8>,
     palette: &Vec<u8>,
-    bg: u8,
+    bg: usize,
 ) {
     match msg.dispcnt & 0x7 {
-        0 => draw_mode0(msg, vram, palette, texture),
+        0 => draw_mode0(&msg.backgrounds[bg], vram, palette, texture),
         1 => fill_texture_argb(texture, 240, 160, 0xFFFF0000),
         2 => fill_texture_argb(texture, 240, 160, 0xFF00FF00),
         3 => draw_mode3(texture, vram),
