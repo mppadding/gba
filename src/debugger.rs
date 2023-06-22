@@ -11,6 +11,9 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use log::debug;
+use log::error;
+use log::info;
 use log::warn;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -52,6 +55,76 @@ pub enum DebuggerEvent {
 pub enum InputMode {
     GAME,
     DEBUGGER,
+}
+
+pub const MGBA_REG_DEBUG_ENABLE: usize = 0x04FFF780;
+pub const MGBA_REG_DEBUG_FLAGS: usize = 0x04FFF700;
+pub const MGBA_REG_DEBUG_STRING: usize = 0x04FFF600;
+
+pub struct MgbaDebug {
+    regs: [u8; 512],
+}
+
+impl MgbaDebug {
+    pub fn new() -> Self {
+        Self { regs: [0; 512] }
+    }
+
+    pub fn read_u8(&self, addr: usize) -> u8 {
+        match addr {
+            0x180 => (self.read_enable() & 0xFF) as u8,
+            0x181 => (self.read_enable() >> 8) as u8,
+            _ => self.regs[addr],
+        }
+    }
+
+    pub fn write_u8(&mut self, addr: usize, val: u8) {
+        match addr {
+            0x100 | 0x101 => {
+                self.regs[addr] = val;
+
+                let flags = self.read_flags();
+                if flags & 0x100 != 0 && self.read_enable() == 0x1DEA {
+                    let s =
+                        std::str::from_utf8(&self.regs[0..=0x100]).expect("invalid utf-8 sequence");
+
+                    #[cfg(not(feature = "debugger"))]
+                    match val & 0b111 {
+                        0 => println!("[FATAL] {s}"),
+                        1 => println!("[ERROR] {s}"),
+                        2 => println!("[WARN ] {s}"),
+                        3 => println!("[INFO ] {s}"),
+                        4 => println!("[DEBUG] {s}"),
+                        _ => {}
+                    }
+
+                    #[cfg(feature = "debugger")]
+                    match val & 0b111 {
+                        0 => error!("GBA FATAL: {s}"),
+                        1 => error!("GBA: {s}"),
+                        2 => warn!("GBA: {s}"),
+                        3 => info!("GBA: {s}"),
+                        4 => debug!("GBA: {s}"),
+                        _ => {}
+                    }
+
+                    self.regs[0x101] = 0x00;
+                }
+            }
+            _ => self.regs[addr] = val,
+        }
+    }
+
+    fn read_flags(&self) -> u16 {
+        ((self.regs[0x101] as u16) << 8) | self.regs[0x100] as u16
+    }
+
+    fn read_enable(&self) -> u16 {
+        match (self.regs[0x180] == 0xDE) && (self.regs[0x181] == 0xC0) {
+            false => 0x0000,
+            true => 0x1DEA,
+        }
+    }
 }
 
 pub struct Debugger {

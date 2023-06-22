@@ -2,7 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use log::*;
 
-use crate::{keypad::Keypad, lcd::LCD, serial::Serial};
+use crate::{
+    debugger::{MgbaDebug, MGBA_REG_DEBUG_ENABLE, MGBA_REG_DEBUG_FLAGS},
+    keypad::Keypad,
+    lcd::LCD,
+    serial::Serial,
+};
 
 const ROM_WRITING: bool = false;
 const INTERNAL_PANIC: bool = false;
@@ -12,7 +17,7 @@ pub trait MMU {
     fn read_u16(&mut self, intern: bool, addr: u32) -> u16;
     fn read_u32(&mut self, intern: bool, addr: u32) -> u32;
     fn write_u8(&mut self, intern: bool, addr: u32, val: u8);
-    //fn write_u16(&mut self, intern: bool, addr: u32, val: u16);
+    fn write_u16(&mut self, intern: bool, addr: u32, val: u16);
     fn write_u32(&mut self, intern: bool, addr: u32, val: u32);
     fn addr_valid(&self, addr: u32) -> bool;
 }
@@ -55,6 +60,7 @@ pub struct CPU {
     pub io_bios_if: u16,
 
     pub cycle_count: usize,
+    pub mgba_debug: MgbaDebug,
 }
 
 impl MMU for CPU {
@@ -114,6 +120,7 @@ impl MMU for CPU {
                     }
                 }
             }
+            0x04FFF600..=0x04FFF800 => self.mgba_debug.read_u8(addr - 0x04FFF600),
             0x05000000..=0x050003FF => self.ram_palette.lock().unwrap()[offset],
             0x06000000..=0x06017FFF => self.ram_video.lock().unwrap()[offset],
             0x07000000..=0x070003FF => self.ram_obj_attr.lock().unwrap()[offset],
@@ -423,6 +430,7 @@ impl MMU for CPU {
                     }
                 }
             }
+            0x04FFF600..=0x04FFF800 => self.mgba_debug.write_u8(addr - 0x04FFF600, val),
             0x05000000..=0x050003FF => self.ram_palette.lock().unwrap()[offset] = val,
             0x06000000..=0x06017FFF => self.ram_video.lock().unwrap()[offset] = val,
             0x07000000..=0x070003FF => self.ram_obj_attr.lock().unwrap()[offset] = val,
@@ -450,6 +458,18 @@ impl MMU for CPU {
                         addr
                     );
                 }
+            }
+        }
+    }
+
+    fn write_u16(&mut self, intern: bool, addr: u32, val: u16) {
+        let high = (val >> 8) as u8;
+        let low = (val & 0xFF) as u8;
+
+        match addr as usize {
+            _ => {
+                self.write_u8(intern, addr + 0, low);
+                self.write_u8(intern, addr + 1, high);
             }
         }
     }
@@ -646,6 +666,9 @@ impl MMU for CPU {
             | (0x03000000..=0x03007FFF)
             | (0x03FFFF00..=0x03FFFFFF)
             | (0x04000000..=0x040003FE)
+            | (0x04FFF600..=0x04FFF6FF) // MGBA_REG_DEBUG_STRING
+            | (0x04FFF700..=0x04FFF701) // MGBA_REG_DEBUG_FLAGS
+            | (0x04FFF780..=0x04FFF781) // MGBA_REG_DEBUG_ENABLE
             | (0x05000000..=0x050003FF)
             | (0x06000000..=0x06017FFF)
             | (0x07000000..=0x070003FF)
@@ -764,6 +787,7 @@ impl CPU {
             halt: false,
             io_bios_if: 0,
             cycle_count: 0,
+            mgba_debug: MgbaDebug::new(),
         }
     }
 
